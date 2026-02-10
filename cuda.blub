@@ -1,0 +1,59 @@
+@cIncludeDir("/opt/cuda/include")
+@linkDir("/opt/cuda/lib64")
+@link("cufft")
+@link("cudart")
+
+Error :: enum(s32) {
+	Success,
+	Error
+}
+
+float2 :: struct {
+	x: f32
+	y: f32
+}
+
+fftHandle :: s32
+
+fftType :: enum(s32) {
+	R2C = 0x2a,
+	C2R = 0x2c,
+	C2C = 0x29,
+	D2Z = 0x6a,
+	Z2D = 0x6c,
+	Z2Z = 0x69
+}
+
+fftResult :: enum(s32) {
+	Success = 0x0,
+	InvalidPlan = 0x1,
+	AllocFailed = 0x2,
+	InvalidType = 0x3,
+	InvalidValue = 0x4,
+	InternalError = 0x5,
+	ExecFailed = 0x6,
+	SetupFailed = 0x7,
+	InvalidSize = 0x8,
+	UnalignedData = 0x9,
+	InvalidDevice = 0xB,
+	NoWorkspace = 0xD,
+	NotImplemented = 0xE,
+	NotSupported = 0x10,
+	MissingDependency = 0x11,
+	NvRtcFailure = 0x12,
+	NvJitLinkFailure = 0x13,
+	NvshmemFailure = 0x14
+}
+
+malloc :: fn "cudaMalloc"(ptr: ^^f32, size: usize) -> Error
+plan2d :: fn "cufftPlan2d"(plan: ^fftHandle, cols: s32, rows: s32, type: fftType) -> fftResult
+
+memcpyKind :: enum(s32) {
+	HostToHost,
+	HostToDevice,
+	DeviceToHost,
+	DeviceToDevice,
+	Default
+}
+
+memcpy :: fn "cudaMemcpy"(dst: ^void, src: ^void, size: usize, kind: memcpyKind) -> Error

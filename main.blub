@@ -1,0 +1,114 @@
+@cIncludeDir("sokol")
+@link("GL")
+@link("X11")
+@link("Xi")
+@link("Xcursor")
+@link("dl")
+@link("pthread")
+@link("m")
+@cDefine("SOKOL_IMPL")
+@cDefine("SOKOL_GLCORE")
+
+sg :: @cImport("sokol/sokol_gfx.h", "sg_")
+app :: @cImport("sokol/sokol_app.h", "sapp_")
+@cInclude("sokol/sokol_glue.h")
+@cInclude("shaders/triangle.glsl.h")
+
+cu :: import "cuda.blub"
+
+glueEnv :: fn "sglue_environment"() -> sg.environment
+swapchain :: fn "sglue_swapchain"() -> sg.swapchain
+
+state : struct {
+    pip: sg.pipeline
+    bind: sg.bindings
+    passAction: sg.pass_action
+} = ()
+
+cleanup :: fn() {
+	sg.shutdown()
+}
+
+write :: fn(fd: s32, buf: [^]u8, count: usize)
+
+print :: fn(buf: []u8) {
+	stdout :: 1
+	write(stdout, buf.data, buf.length)
+}
+
+println :: fn(buf: []u8) {
+	print(buf)
+	print("\n")
+}
+
+triShaderDesc :: fn "triangle_shader_desc"(backend: sg.backend) -> ^sg.shader_desc
+
+init :: fn() {
+	println("Starting window")
+	desc := sg.desc(
+		environment = glueEnv(),
+	)
+	sg.setup(^desc)
+	println("gfx setup called")
+
+	verts := [
+		0.,  0.5, 0.5,     1.0, 0.0, 0.0, 1.0,
+		0.5, -0.5, 0.5,     0.0, 1.0, 0.0, 1.0,
+		-0.5, -0.5, 0.5,    0.0, 0.0, 1.0, 1.0
+	]
+	vertBufferDesc := sg.buffer_desc(
+		data = sg.range(^verts, @type(verts).size)
+	)
+	println("Made vertBufferDesc")
+	state.bind.vertex_buffers[0] = sg.make_buffer(^vertBufferDesc)
+	
+	println("Made buffer")
+	pipelineDesc := sg.pipeline_desc(
+		shader = sg.make_shader(triShaderDesc(sg.query_backend())),
+	)
+	# printInt(sg.pipeline_desc.size)
+	println("Made pipeline desc")
+	pipelineDesc.layout.attrs[0] = (format = sg.vertex_format.FLOAT3)
+	pipelineDesc.layout.attrs[1] = (format = sg.vertex_format.FLOAT4)
+
+	state.pip = sg.make_pipeline(^pipelineDesc)
+	println("Made pipeline")
+
+	state.passAction.colors[0] = (
+		load_action = .CLEAR,
+		clear_value = (0, 0, 0, 1)
+	)
+}
+
+frame :: fn() {
+	print(
+		\"New frame 
+		\"
+	)
+	h : cu.fftHandle = 0
+	result := cu.plan2d(^h, 16, 16, .C2C)
+	if (result == .Success) {
+		println("FFT success!!!")
+	} else {
+		println("Failed fft")
+	}
+
+	pass := sg.pass(action = state.passAction, swapchain = swapchain())
+	sg.begin_pass(^pass)
+    sg.apply_pipeline(state.pip)
+    sg.apply_bindings(^state.bind)
+    sg.draw(0, 3, 1)
+    sg.end_pass()
+    sg.commit()
+}
+
+sokol_main :: fn(argc: s32, argv: [^][^]u8) -> app.desc {
+	return app.desc(
+		init_cb = init,
+		frame_cb = frame,
+		cleanup_cb = cleanup,
+		width = 640,
+		height = 480,
+		window_title = ^c"Triangle"[0],
+	)
+}
