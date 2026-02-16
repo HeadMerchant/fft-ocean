@@ -1,4 +1,8 @@
 @vs vs
+layout(binding=0) uniform vs_params {
+    mat4 bruh;
+};
+
 in vec4 position;
 in vec4 color0;
 
