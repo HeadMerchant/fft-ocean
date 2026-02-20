@@ -1,0 +1,45 @@
+@cIncludeDir("sokol")
+@link("GL")
+@link("X11")
+@link("Xi")
+@link("Xcursor")
+@link("dl")
+@link("pthread")
+@link("m")
+@cDefine("SOKOL_IMPL")
+@cDefine("SOKOL_GLCORE")
+@cDefine("SOKOL_LOG_IMPL")
+sg :: @cImport("sokol/sokol_gfx.h", "sg_")
+
+lookupBuffer :: fn "_sg_lookup_buffer"(id: u32) -> ^struct {
+	slot: struct {
+		id: u32
+		uninitCount: u32
+		state: sg.resource_state
+	}
+	cmn: struct {
+		size: s32
+		appendPos: s32
+		appendOverflow: bool
+		updateFrameIndex: u32
+		appendFrameIndex: u32
+		numSlots: s32
+		activeSlots: s32
+		usage: sg.buffer_usage
+	}
+	gl: struct {
+		buf: [2]u32
+		dirtyFlags: u8
+		injected: bool
+	}
+}
+
+# BufferBindTarget :: enum(u32){
+# 	ArrayBuffer = 0x8892,
+# }
+# readBuffer :: fn "glGetBufferSubData"(target: BufferBindTarget, offset: usize, size: usize, data: ^void)
+readBuffer :: fn "glGetNamedBufferSubData"(buffer: u32, offset: usize, size: usize, data: ^void)
+readBack :: fn(buffer: sg.buffer, size: usize, data: ^void) {
+	glBuffer := lookupBuffer(buffer.id).gl.buf[0]
+	readBuffer(glBuffer, 0, size, data)
+}

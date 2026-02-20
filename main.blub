@@ -1,25 +1,20 @@
-@cIncludeDir("sokol")
-@link("GL")
-@link("X11")
-@link("Xi")
-@link("Xcursor")
-@link("dl")
-@link("pthread")
-@link("m")
-@cDefine("SOKOL_IMPL")
-@cDefine("SOKOL_GLCORE")
+cu :: import "cuda.blub"
+gl :: import "gl.blub"
+sg :: gl.sg
 
-sg :: @cImport("sokol/sokol_gfx.h", "sg_")
 app :: @cImport("sokol/sokol_app.h", "sapp_")
 time :: @cImport("sokol/sokol_time.h", "stm_")
+log :: @cImport("sokol/sokol_log.h", "slog_")
 @cInclude("sokol/sokol_glue.h")
 @cInclude("shaders/triangle.glsl.h")
 
-cu :: import "cuda.blub"
 
 glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 math :: import "math.blub"
+fmt :: import "fmt.blub"
+print :: fmt.print
+println :: fmt.println
 
 state : struct {
     pip: sg.pipeline
@@ -40,26 +35,29 @@ cleanup :: fn() {
 	sg.shutdown()
 }
 
-write :: fn(fd: s32, buf: [^]u8, count: usize)
-
-print :: fn(buf: []u8) {
-	stdout :: 1
-	write(stdout, buf.data, buf.length)
-}
-
-println :: fn(buf: []u8) {
-	print(buf)
-	print("\n")
-}
-
 vs := \"#version 410
-    \"layout(location = 0) in vec4 position;
+	\"uniform vec4 mvp[4];
+    \"layout(location = 0) in vec2 position;
     \"layout(location = 0) out vec4 color;
-    \"layout(location = 1) in vec4 color0;
-    \"void main()
-    \"{
-    \"    gl_Position = position;
-    \"    color = color0;
+    \"layout(location = 1) in vec3 color0;
+    \"void main() {
+	\"    vec2 pos[4];
+	\"    pos[0] = vec2(-0.5,  0.5);
+	\"    pos[1] = vec2( 0.5,  0.5);
+	\"    pos[2] = vec2( 0.5, -0.5);
+	\"    pos[3] = vec2(-0.5, -0.5);
+	\"    mat4 mv2 = mat4(
+	\"    	vec4(1., 0., 0., 0.),
+	\"    	vec4(0., 1., 0., 0.),
+	\"    	vec4(0., 0., 1., 0.),
+	\"    	vec4(0., 0., 0., 1.)
+	\"    );
+	\"    vec3 usedPos = vec3(pos[gl_VertexID], 1.);
+	\"    //vec3 usedPos = position;
+	\"    //gl_Position = mv2 * vec4(usedPos., 1.);
+	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(usedPos, 1.);
+	\"    //color = vec4(color0, 1.);
+    \"    color = vec4(position.x, color0.y, mvp[3].x, 1.);
     \"}\x00
 
 fs := \"#version 410
@@ -70,65 +68,25 @@ fs := \"#version 410
     \"    frag_color = color;
     \"}\x00
 
-shaderDesc :: fn() -> sg.shader_desc {
-	desc := sg.shader_desc(
-		vertex_func = (
-			source = ^vs.data[0],
-			entry = ^c"main"[0]
-		),
-		fragment_func = (
-			source = ^fs.data[0],
-			entry = ^c"main"[0]
-		),
-		label = ^c"triangle_shader"[0]
-	)
-	desc.attrs[0] = (
-		base_type = .FLOAT,
-		glsl_name = ^c"position"[0]
-	)
-	desc.attrs[1] = (
-		base_type = .FLOAT,
-		glsl_name = ^c"color0"[0]
-	)
-	return desc
-}
-
-print_u32 :: fn(x: u32) {
-	buf : [10]u8 = ---
-	if (x == 0) {
-		buf[9] = 48
-		print(buf[9.<])
-	}
-	i := 10
-	y := x
-	while (y > 0) {
-		i = i - 1
-		digit := y % 10
-		y = y / 10
-		buf[i] = 48 + @numCast(digit, u8)
-	}
-	print(buf[i.<])
-}
-
 startTime : u64 = 0
 
 init :: fn() {
 	println("Starting window")
 	desc := sg.desc(
 		environment = glueEnv(),
-		# logger = (func = slog.func)
+		logger = (func = log.func)
 	)
 	sg.setup(^desc)
 	println("gfx setup called")
 
-	# 1 - 2
-	# | / |
-	# 0 - 3
-	verts := [
-		0,  0.5, 0.5,    1., 1, 1., 1.,
-		0.5,  -0.5, 0.5,    1., 0, 0., 1.,
-		-0.5,  -0.5, 0.5,    0., 1, 0., 1.,
-		1,  0, 0.5,    0., 0, 1., 1.,
+	# 0 - 1
+	# | \ |
+	# 3 - 2
+	verts : @align(16) [20]f32 = [
+		-1,  1,   1, 1, 1,
+		 1,  1,   1, 1, 1,
+		 1, -1,   1, 1, 1,
+		-1, -1,   1, 1, 1,
 	]
 	indices : [6]u16 = [
 		0, 2, 1,
@@ -136,29 +94,92 @@ init :: fn() {
 		0, 3, 2,
 	]
 	vertBufferDesc := sg.buffer_desc(
-		data = sg.range(^verts, @type(verts).size)
+		data = sg.range(^verts, @type(verts).size),
+		label = c"vertex-buf",
 	)
 	indexBufferDesc := sg.buffer_desc(
 		data = sg.range(^indices, @type(indices).size),
 		usage = (index_buffer = true),
+		label = c"index-buf",
 	)
-	println("Made vertBufferDesc")
-	state.bind.vertex_buffers[0] = sg.make_buffer(^vertBufferDesc)
-	state.bind.index_buffer = sg.make_buffer(^indexBufferDesc)
+	vertBuffer := sg.make_buffer(^vertBufferDesc)
+	indexBuffer := sg.make_buffer(^indexBufferDesc)
+	state.bind.vertex_buffers[0] = vertBuffer
+	print("Vertex buffer state:")
+	bufferState := sg.query_buffer_state(vertBuffer)
+
+	if (bufferState == .INITIAL) println("INITIAL")
+	else if (bufferState == .ALLOC) println("ALLOC")
+	else if (bufferState == .VALID) println("VALID")
+	else if (bufferState == .FAILED) println("FAILED")
+	else if (bufferState == .INVALID) println("INVALID")
+
+	state.bind.index_buffer = indexBuffer
+
+	vertReadback : [5]f32 = [5, 5, 5, 5, 5]
+	i: u64 = 0
+	sentinel := vertReadback[i]
+	gl.readBack(vertBuffer, 4*(i+1), ^vertReadback)
+
+	if (vertReadback[i] == sentinel) println("unwritten")
+	else if (vertReadback[i] == verts[i]) println("read correctly")
+	else println("new value")
+
+	println("Original value")
+	fmt.printBin(@bitCast(verts[i]))
+	println("")
+	fmt.printHex(@bitCast(verts[i]))
+	println("")
+
+
+	println("Read back value:")
+	fmt.printBin(@bitCast(vertReadback[i]))
+	println("")
+	fmt.printHex(@bitCast(vertReadback[i]))
+	println("")
+
+	info := sg.query_buffer_info(vertBuffer)
 	
-	println("Made buffer")
-	shader := shaderDesc()
+	shader := sg.shader_desc(
+		vertex_func = (
+			source = ^vs.data[0],
+			entry = c"main",
+		),
+		fragment_func = (
+			source = ^fs.data[0],
+			entry = c"main",
+		),
+		label = c"triangle_shader"
+	)
+	shader.attrs[0] = (
+		base_type = .FLOAT,
+		glsl_name = c"position"
+	)
+	shader.attrs[1] = (
+		base_type = .FLOAT,
+		glsl_name = c"color0"
+	)
+	shader.uniform_blocks[0] = (
+		stage = .VERTEX,
+		size = math.mat4x4.size,
+	)
+	shader.uniform_blocks[0].glsl_uniforms[0] = (
+		type = .FLOAT4,
+		array_count = 4,
+		glsl_name = c"mvp"
+	)
+
 	pipelineDesc := sg.pipeline_desc(
 		shader = sg.make_shader(^shader),
+		cull_mode = .FRONT,
 		index_type = .UINT16,
 	)
 
-	println("Made pipeline desc")
-	pipelineDesc.layout.attrs[0].format = .FLOAT3
-	pipelineDesc.layout.attrs[1].format = .FLOAT4
+	pipelineDesc.layout.attrs[0].format = .FLOAT2
+	pipelineDesc.layout.attrs[1].format = .FLOAT3
+	# pipelineDesc.layout.buffers[0].stride = f32.size * 6
 
 	state.pip = sg.make_pipeline(^pipelineDesc)
-	println("Made pipeline")
 
 	state.passAction.colors[0] = (
 		load_action = .CLEAR,
@@ -174,7 +195,8 @@ frame :: fn() {
 	handle : cu.fftHandle = 0
 	result := cu.plan2d(^handle, 16, 16, .C2C)
 	if (result == .Success) {
-		print_u32(99)
+		# print_u32(@numCast(time.since(startTime)))
+		# println("")
 		# println("FFT success!!!")
 	} else {
 		println("Failed fft")
@@ -182,22 +204,25 @@ frame :: fn() {
 	w := app.widthf()
 	h := app.heightf()
 	red := math.sin(@numCast(seconds))
-	state.passAction.colors[0].clear_value.b = red * red
+	state.passAction.colors[0].clear_value.r = red * red
 
 	pass := sg.pass(action = state.passAction, swapchain = swapchain())
 	sg.begin_pass(^pass)
     sg.apply_pipeline(state.pip)
     sg.apply_bindings(^state.bind)
-	# println("Applied bindings")
 
 	# viewMatrix := math.perspective(math.deg2rad * 60, w/h, .01, 10)
-	viewMatrix := math.translate(math.vec3(0, 0, 0))
-	# uniformRange := sg.range(^viewMatrix, @type(viewMatrix).size)
-	# println("making uniform")
-	# sg.apply_uniforms(0, ^uniformRange)
-	# println("applying uniform")
+	# viewMatrix: math.mat4x4 = [
+	# 	[  1,   0,   0,  0,],
+	# 	[  0,   1,   0,  0,],
+	# 	[  0,   0,   1,  0,],
+	# 	[ red, 0.1,   0,  1,],
+	# ]
+	viewMatrix := math.translate(math.vec3(1., .1, 0))
+	uniformRange := sg.range(^viewMatrix, @type(viewMatrix).size)
+	sg.apply_uniforms(0, ^uniformRange)
 
-    sg.draw(0, 3, 1)
+    sg.draw(0, 6, 1)
     sg.end_pass()
     sg.commit()
 }
@@ -240,6 +265,6 @@ sokol_main :: fn(argc: s32, argv: [^][^]u8) -> app.desc {
 		event_cb = event,
 		width = 640,
 		height = 480,
-		window_title = ^c"Triangle"[0],
+		window_title = c"Triangle",
 	)
 }

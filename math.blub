@@ -1,3 +1,5 @@
+# OpenGL uses column-major, so all matrices are column major
+
 vec2 :: struct {
 	x: f32
 	y: f32
@@ -7,10 +9,7 @@ sac :: fn "llvm.sincos.f32"(radian: f32) -> vec2
 sin :: fn "llvm.sin.f32"(radian: f32) -> f32
 cos :: fn "llvm.cos.f32"(radian: f32) -> f32
 
-mat4x4 :: [4][4]f32
-# mat4x4 :: struct {
-# 	data: [4][4]f32
-# }
+mat4x4 :: @align(16) [4][4]f32
 
 vec3 :: struct {
 	x: f32
@@ -37,10 +36,10 @@ matMul :: fn(a: ^mat4x4, b: ^mat4x4) -> mat4x4 {
 
 translate :: fn(x: vec3) -> mat4x4 {
 	return [
-		[ 1.,  0.,  0., 0.],
-		[ 0.,  1.,  0., 0.],
-		[ 0.,  0.,  1., 0.],
-		[x.x, x.y, x.z, 1.],
+		[  1.,  0.,  0., 0.],
+		[  0.,  1.,  0., 0.],
+		[  0.,  0.,  1., 0.],
+		[ x.x, x.y, x.z, 1.],
 	]
 }
 
