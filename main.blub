@@ -37,27 +37,12 @@ cleanup :: fn() {
 
 vs := \"#version 410
 	\"uniform vec4 mvp[4];
-    \"layout(location = 0) in vec2 position;
+    \"layout(location = 0) in vec3 position;
     \"layout(location = 0) out vec4 color;
-    \"layout(location = 1) in vec3 color0;
+    \"layout(location = 1) in vec4 color0;
     \"void main() {
-	\"    vec2 pos[4];
-	\"    pos[0] = vec2(-0.5,  0.5);
-	\"    pos[1] = vec2( 0.5,  0.5);
-	\"    pos[2] = vec2( 0.5, -0.5);
-	\"    pos[3] = vec2(-0.5, -0.5);
-	\"    mat4 mv2 = mat4(
-	\"    	vec4(1., 0., 0., 0.),
-	\"    	vec4(0., 1., 0., 0.),
-	\"    	vec4(0., 0., 1., 0.),
-	\"    	vec4(0., 0., 0., 1.)
-	\"    );
-	\"    vec3 usedPos = vec3(pos[gl_VertexID], 1.);
-	\"    //vec3 usedPos = position;
-	\"    //gl_Position = mv2 * vec4(usedPos., 1.);
-	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(usedPos, 1.);
-	\"    //color = vec4(color0, 1.);
-    \"    color = vec4(position.x, color0.y, mvp[3].x, 1.);
+	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
+	\"    color = color0;
     \"}\x00
 
 fs := \"#version 410
@@ -79,20 +64,47 @@ init :: fn() {
 	sg.setup(^desc)
 	println("gfx setup called")
 
-	# 0 - 1
-	# | \ |
-	# 3 - 2
-	verts : @align(16) [20]f32 = [
-		-1,  1,   1, 1, 1,
-		 1,  1,   1, 1, 1,
-		 1, -1,   1, 1, 1,
-		-1, -1,   1, 1, 1,
+	verts := [
+        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
+         1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
+         1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
+        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
+
+        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+         1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+         1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
+
+        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
+        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
+        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
+        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
+
+        1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
+        1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
+        1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
+        1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
+
+        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
+        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
+         1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
+         1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
+
+        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
+        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
+         1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
+         1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
 	]
-	indices : [6]u16 = [
-		0, 2, 1,
-		# TODO: come back and flip this
-		0, 3, 2,
-	]
+
+	indices : [36]u16 = [
+         0,  1,  2,   0,  2,  3,
+         6,  5,  4,   7,  6,  4,
+         8,  9, 10,   8, 10, 11,
+        14, 13, 12,  15, 14, 12,
+        16, 17, 18,  16, 18, 19,
+        22, 21, 20,  23, 22, 20,
+    ]
+
 	vertBufferDesc := sg.buffer_desc(
 		data = sg.range(^verts, @type(verts).size),
 		label = c"vertex-buf",
@@ -116,30 +128,6 @@ init :: fn() {
 
 	state.bind.index_buffer = indexBuffer
 
-	vertReadback : [5]f32 = [5, 5, 5, 5, 5]
-	i: u64 = 0
-	sentinel := vertReadback[i]
-	gl.readBack(vertBuffer, 4*(i+1), ^vertReadback)
-
-	if (vertReadback[i] == sentinel) println("unwritten")
-	else if (vertReadback[i] == verts[i]) println("read correctly")
-	else println("new value")
-
-	println("Original value")
-	fmt.printBin(@bitCast(verts[i]))
-	println("")
-	fmt.printHex(@bitCast(verts[i]))
-	println("")
-
-
-	println("Read back value:")
-	fmt.printBin(@bitCast(vertReadback[i]))
-	println("")
-	fmt.printHex(@bitCast(vertReadback[i]))
-	println("")
-
-	info := sg.query_buffer_info(vertBuffer)
-	
 	shader := sg.shader_desc(
 		vertex_func = (
 			source = ^vs.data[0],
@@ -171,12 +159,16 @@ init :: fn() {
 
 	pipelineDesc := sg.pipeline_desc(
 		shader = sg.make_shader(^shader),
-		cull_mode = .FRONT,
+		cull_mode = .BACK,
+		depth = (
+			write_enabled = true,
+			compare = .LESS_EQUAL,
+		),
 		index_type = .UINT16,
 	)
 
-	pipelineDesc.layout.attrs[0].format = .FLOAT2
-	pipelineDesc.layout.attrs[1].format = .FLOAT3
+	pipelineDesc.layout.attrs[0].format = .FLOAT3
+	pipelineDesc.layout.attrs[1].format = .FLOAT4
 	# pipelineDesc.layout.buffers[0].stride = f32.size * 6
 
 	state.pip = sg.make_pipeline(^pipelineDesc)
@@ -201,8 +193,6 @@ frame :: fn() {
 	} else {
 		println("Failed fft")
 	}
-	w := app.widthf()
-	h := app.heightf()
 	red := math.sin(@numCast(seconds))
 	state.passAction.colors[0].clear_value.r = red * red
 
@@ -211,18 +201,23 @@ frame :: fn() {
     sg.apply_pipeline(state.pip)
     sg.apply_bindings(^state.bind)
 
-	# viewMatrix := math.perspective(math.deg2rad * 60, w/h, .01, 10)
-	# viewMatrix: math.mat4x4 = [
-	# 	[  1,   0,   0,  0,],
-	# 	[  0,   1,   0,  0,],
-	# 	[  0,   0,   1,  0,],
-	# 	[ red, 0.1,   0,  1,],
-	# ]
-	viewMatrix := math.translate(math.vec3(1., .1, 0))
-	uniformRange := sg.range(^viewMatrix, @type(viewMatrix).size)
+	w := app.widthf()
+	h := app.heightf()
+	aspect := w/h
+	projection := math.perspective(math.deg2rad * 60, aspect, 0.01, 10)
+	# projection := math.ortho((-2, -2, -1), (2, 2, 1))
+	# viewMatrix := math.lookAt((0.0, 1.5, 4.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+	# mvp := math.mult(^projection, ^viewMatrix)
+	# viewMatrix := math.translate(math.vec3(red, .1, 0))
+	# viewMatrix := math.identity()
+	l2w := math.rotYZ(@numCast(seconds))
+	mvp := math.mult(^projection, ^l2w)
+	# w2c := math.
+	uniformRange := sg.range(^mvp, @type(projection).size)
 	sg.apply_uniforms(0, ^uniformRange)
 
-    sg.draw(0, 6, 1)
+    sg.draw(0, 36, 1)
     sg.end_pass()
     sg.commit()
 }
