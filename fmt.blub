@@ -74,5 +74,5 @@ printHex :: fn(x: u32) {
 		i = i + 1
 	}
 
-	print(buf[0.<])
+	println(buf[0.<])
 }

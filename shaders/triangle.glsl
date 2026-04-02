@@ -1,6 +1,6 @@
 @vs vs
 layout(binding=0) uniform vs_params {
-    mat4 bruh;
+    mat4 mvp;
 };
 
 in vec4 position;
@@ -9,7 +9,7 @@ in vec4 color0;
 out vec4 color;
 
 void main() {
-    gl_Position = position;
+    gl_Position = mvp*position;
     color = color0;
 }
 @end

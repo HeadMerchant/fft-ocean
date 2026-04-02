@@ -11,24 +11,26 @@ log :: @cImport("sokol/sokol_log.h", "slog_")
 
 glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
-math :: import "math.blub"
-fmt :: import "fmt.blub"
-print :: fmt.print
-println :: fmt.println
+using import "math.blub"
+using import "fmt.blub"
 
 state : struct {
     pip: sg.pipeline
     bind: sg.bindings
     passAction: sg.pass_action
-} = ()
+	position: vec3
+	latitude: f32
+	longitude: f32
+} = (position = (0, 0, -3))
 
 input : struct {
-	mousePos: math.vec2
+	mousePos: vec2
 	mouseDown: bool
 	forward: bool
 	backward: bool
 	left: bool
 	right: bool
+	mouseDelta: vec2
 } = ()
 
 cleanup :: fn() {
@@ -41,6 +43,7 @@ vs := \"#version 410
     \"layout(location = 0) out vec4 color;
     \"layout(location = 1) in vec4 color0;
     \"void main() {
+	\"    //gl_Position = vec4(position, 1.);
 	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
 	\"    color = color0;
     \"}\x00
@@ -48,8 +51,7 @@ vs := \"#version 410
 fs := \"#version 410
     \"layout(location = 0) out vec4 frag_color;
     \"layout(location = 0) in vec4 color;
-    \"void main()
-    \"{
+    \"void main() {
     \"    frag_color = color;
     \"}\x00
 
@@ -65,45 +67,54 @@ init :: fn() {
 	println("gfx setup called")
 
 	verts := [
-        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0, -1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0, 1.0,
-
-        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-         1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0, 1.0,
-
-        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0, 1.0,
-
-        1.0, -1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0, -1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0,  1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-        1.0, -1.0,  1.0,    1.0, 0.5, 0.0, 1.0,
-
-        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0,  1.0,   0.0, 0.5, 1.0, 1.0,
-         1.0, -1.0, -1.0,   0.0, 0.5, 1.0, 1.0,
-
-        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0,  1.0,   1.0, 0.0, 0.5, 1.0,
-         1.0,  1.0, -1.0,   1.0, 0.0, 0.5, 1.0,
-	]
-
-	indices : [36]u16 = [
-         0,  1,  2,   0,  2,  3,
-         6,  5,  4,   7,  6,  4,
-         8,  9, 10,   8, 10, 11,
-        14, 13, 12,  15, 14, 12,
-        16, 17, 18,  16, 18, 19,
-        22, 21, 20,  23, 22, 20,
+        -0.5,  0.5, -0.5,     1.0, 0.0, 0.0,
+         0.5,  0.5, -0.5,     0.0, 1.0, 0.0,
+         0.5, -0.5, -0.5,     0.0, 0.0, 1.0,
+        -0.5, -0.5, -0.5,     1.0, 1.0, 0.0,
     ]
+
+	indices : [6]u16 = [0, 1, 2, 0, 2, 3]
+
+	# verts := [
+ #        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0,
+ #         1.0, -1.0, -1.0,   1.0, 0.0, 0.0,
+ #         1.0,  1.0, -1.0,   1.0, 0.0, 0.0,
+ #        -1.0,  1.0, -1.0,   1.0, 0.0, 0.0,
+
+ #        -1.0, -1.0,  1.0,   0.0, 1.0, 0.0,
+ #         1.0, -1.0,  1.0,   0.0, 1.0, 0.0,
+ #         1.0,  1.0,  1.0,   0.0, 1.0, 0.0,
+ #        -1.0,  1.0,  1.0,   0.0, 1.0, 0.0,
+
+ #        -1.0, -1.0, -1.0,   0.0, 0.0, 1.0,
+ #        -1.0,  1.0, -1.0,   0.0, 0.0, 1.0,
+ #        -1.0,  1.0,  1.0,   0.0, 0.0, 1.0,
+ #        -1.0, -1.0,  1.0,   0.0, 0.0, 1.0,
+
+ #        1.0, -1.0, -1.0,    1.0, 0.5, 0.0,
+ #        1.0,  1.0, -1.0,    1.0, 0.5, 0.0,
+ #        1.0,  1.0,  1.0,    1.0, 0.5, 0.0,
+ #        1.0, -1.0,  1.0,    1.0, 0.5, 0.0,
+
+ #        -1.0, -1.0, -1.0,   0.0, 0.5, 1.0,
+ #        -1.0, -1.0,  1.0,   0.0, 0.5, 1.0,
+ #         1.0, -1.0,  1.0,   0.0, 0.5, 1.0,
+ #         1.0, -1.0, -1.0,   0.0, 0.5, 1.0,
+
+ #        -1.0,  1.0, -1.0,   1.0, 0.0, 0.5,
+ #        -1.0,  1.0,  1.0,   1.0, 0.0, 0.5,
+ #         1.0,  1.0,  1.0,   1.0, 0.0, 0.5,
+ #         1.0,  1.0, -1.0,   1.0, 0.0, 0.5,
+	# ]
+
+	# indices : [36]u16 = [
+ #         0,  1,  2,   0,  2,  3,
+ #         6,  5,  4,   7,  6,  4,
+ #         8,  9, 10,   8, 10, 11,
+ #        14, 13, 12,  15, 14, 12,
+ #        16, 17, 18,  16, 18, 19,
+ #        22, 21, 20,  23, 22, 20,
+ #    ]
 
 	vertBufferDesc := sg.buffer_desc(
 		data = sg.range(^verts, @type(verts).size),
@@ -149,7 +160,7 @@ init :: fn() {
 	)
 	shader.uniform_blocks[0] = (
 		stage = .VERTEX,
-		size = math.mat4x4.size,
+		size = mat4.size,
 	)
 	shader.uniform_blocks[0].glsl_uniforms[0] = (
 		type = .FLOAT4,
@@ -159,7 +170,7 @@ init :: fn() {
 
 	pipelineDesc := sg.pipeline_desc(
 		shader = sg.make_shader(^shader),
-		cull_mode = .BACK,
+		# cull_mode = .BACK,
 		depth = (
 			write_enabled = true,
 			compare = .LESS_EQUAL,
@@ -168,8 +179,7 @@ init :: fn() {
 	)
 
 	pipelineDesc.layout.attrs[0].format = .FLOAT3
-	pipelineDesc.layout.attrs[1].format = .FLOAT4
-	# pipelineDesc.layout.buffers[0].stride = f32.size * 6
+	pipelineDesc.layout.attrs[1].format = .FLOAT3
 
 	state.pip = sg.make_pipeline(^pipelineDesc)
 
@@ -182,8 +192,24 @@ init :: fn() {
 	startTime = time.now()
 }
 
+prevTime := 0.
+deltaTime := 0.
+
 frame :: fn() {
-	seconds := time.sec(time.since(startTime))
+	seconds : f32 = @numCast(time.sec(time.since(startTime)))
+	deltaTime = seconds - prevTime
+	movement := vec3(
+		if (input.left) -1 else if (input.right) 1 else 0,
+		0,
+		if (input.backward) -1 else if (input.forward) 1 else 0
+	)
+
+	state.position.x +=  movement.x * deltaTime
+	state.position.y += -movement.z * deltaTime
+	# printHex(@bitCast(state.position.x))
+	# println("")
+
+	# cuda
 	handle : cu.fftHandle = 0
 	result := cu.plan2d(^handle, 16, 16, .C2C)
 	if (result == .Success) {
@@ -193,61 +219,79 @@ frame :: fn() {
 	} else {
 		println("Failed fft")
 	}
-	red := math.sin(@numCast(seconds))
-	state.passAction.colors[0].clear_value.r = red * red
 
+	# colors
+	red := sin 2. seconds
+	state.passAction.colors[0].clear_value.r = red red
+
+	# rendering
 	pass := sg.pass(action = state.passAction, swapchain = swapchain())
 	sg.begin_pass(^pass)
     sg.apply_pipeline(state.pip)
     sg.apply_bindings(^state.bind)
 
+	# camera
 	w := app.widthf()
 	h := app.heightf()
 	aspect := w/h
-	projection := math.perspective(math.deg2rad * 60, aspect, 0.01, 10)
-	# projection := math.ortho((-2, -2, -1), (2, 2, 1))
-	# viewMatrix := math.lookAt((0.0, 1.5, 4.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+	proj := Perspective(1. / 6., aspect, 0.01, 10)
+	camera := InvTranslate(Translate(state.position))
+	# rotation := quatFromLatitude(state.latitude, state.longitude)
+	rotation := Q(5., 2., 1., 1.)
+	rotation.print()
 
-	# mvp := math.mult(^projection, ^viewMatrix)
-	# viewMatrix := math.translate(math.vec3(red, .1, 0))
-	# viewMatrix := math.identity()
-	l2w := math.rotYZ(@numCast(seconds))
-	mvp := math.mult(^projection, ^l2w)
-	# w2c := math.
-	uniformRange := sg.range(^mvp, @type(projection).size)
+	# rotation = InvQ(rotation)
+	# camera = MulM4(camera, QToM4(rotation))
+	rotMat := QToM4(rotation)
+	printHex @bitCast(rotMat[0][0])
+	printHex @bitCast(rotMat[0][1])
+	printHex @bitCast(rotMat[0][2])
+	printHex @bitCast(rotMat[0][3])
+	mvp := proj camera
+
+	uniformRange := sg.range(^mvp, @type(mvp).size)
 	sg.apply_uniforms(0, ^uniformRange)
 
-    sg.draw(0, 36, 1)
+    sg.draw(0, 6, 1)
+    # sg.draw(0, 36, 1)
     sg.end_pass()
     sg.commit()
+
+	prevTime = seconds
 }
 
 event :: fn(e: ^app.event) {
-	if (e.type == .MOUSE_DOWN) {
-		println("mouse down")
-		input.mouseDown = true
-	} else if (e.type == .MOUSE_UP) {
-		println("mouse up")
-		input.mouseDown = false
-	} else if (e.type == .KEY_DOWN) {
-		if (e.key_code == .W) {
-			input.forward = true
-		} else if (e.key_code == .A) {
-			input.left = true
-		} else if (e.key_code == .S) {
-			input.backward = true
-		} else if (e.key_code == .D) {
-			input.right = true
+	when (e.type) {
+		.MOUSE_DOWN => {
+			println("mouse down")
+			input.mouseDown = true
 		}
-	} else if (e.type == .KEY_UP) {
-		if (e.key_code == .W) {
-			input.forward = false
-		} else if (e.key_code == .A) {
-			input.left = false
-		} else if (e.key_code == .S) {
-			input.backward = false
-		} else if (e.key_code == .D) {
-			input.right = false
+		.MOUSE_UP => {
+			println("mouse up")
+			input.mouseDown = false
+		}
+		.KEY_DOWN => {
+			when (e.key_code) {
+				.W => input.forward
+				.A => input.left
+				.S => input.backward
+				.D => input.right
+				else => return
+			} = true
+		}
+		.KEY_UP => {
+			when (e.key_code) {
+				.W => input.forward
+				.A => input.left
+				.S => input.backward
+				.D => input.right
+				else => return
+			} = false
+		}
+		.MOUSE_MOVE => if (input.mouseDown) {
+			dt := deltaTime * .2
+			state.latitude += e.mouse_dx * dt
+			state.longitude += e.mouse_dy * dt
 		}
 	}
 }
