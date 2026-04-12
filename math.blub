@@ -9,6 +9,13 @@ vec3 :: struct {
 	z: f32
 }
 
+vec4 :: struct {
+	x: f32
+	y: f32
+	z: f32
+	w: f32
+}
+
 mat4 :: @align(16) [4][4]f32
 
 quat :: @align(16) struct {
@@ -20,22 +27,54 @@ quat :: @align(16) struct {
 
 @cDefine("HANDMADE_MATH_NO_SIMD")
 @cDefine("HANDMADE_MATH_USE_TURNS")
-using @cImport("cdeps/hmm.h", "HMM_", HMM_Vec2=vec2, HMM_Vec3=vec3, HMM_Mat4=mat4, HMM_Quat=quat)
+using @cImport("cdeps/hmm.h", "HMM_", HMM_Vec2=vec2, HMM_Vec3=vec3, HMM_Mat4=mat4, HMM_Quat=quat, HMM_Vec4=vec4)
 fmt :: import "fmt.blub"
 
 quat impl {
 	print :: fn(self: Self) {
 		using fmt
 		println("QUATERNION")
-		printHex @bitCast(self.x)
-		printHex @bitCast(self.y)
-		printHex @bitCast(self.z)
-		printHex @bitCast(self.w)
+		printFloat self.x
+		printFloat self.y
+		printFloat self.z
+		printFloat self.w
 	}
+	multiply :: MulQ
+	inverse :: InvQ
+	geographic :: fn(latitude: f32, longitude: f32) -> quat {
+		lat := cas(latitude / 2.)
+		lon := cas(longitude / 2.)
+		# TODO: r-value methods
+		a := quat(0, lat.y, 0, lat.x)
+		return a quat(lon.y, 0, 0, lon.x)
+	}
+	dot :: DotQ
 }
 
 mat4 impl {
 	multiply :: MulM4
+	printPosition :: fn(self: Self) {
+		using fmt
+		println("Translation")
+		printFloat self[3][0]
+		printFloat self[3][1]
+		printFloat self[3][2]
+	}
+}
+
+vec3 impl {
+	dot :: DotV3
+	print :: fn(self: Self) {
+		using fmt
+		printFloat self.x
+		print ", "
+		printFloat self.y
+		print ", "
+		printFloat self.z
+		print ": "
+		printFloat self.dot(self)
+		println ""
+	}
 }
 
 sac :: fn "llvm.sincos.f32"(radian: f32) -> vec2
@@ -49,15 +88,3 @@ cas :: fn(turn: f32) -> vec2 {
 tan :: fn "llvm.tan.f32"(radian: f32) -> f32
 pi :: 3.14159
 deg2rad :: 2*pi/180
-
-# Z-up?
-quatFromLatitude :: fn(latitude: f32, longitude: f32) -> quat {
-	lat := cas(latitude / 2.)
-	lon := cas(longitude / 2.)
-	# xyzw
-	# y-up
-	return MulQ(
-		(0, lat.y, 0, lat.x),
-		(lon.y, 0, 0, lon.x)
-	)
-}

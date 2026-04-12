@@ -13,6 +13,7 @@ glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 using import "math.blub"
 using import "fmt.blub"
+kernels :: @cudaImport "test.cu.blub"
 
 state : struct {
     pip: sg.pipeline
@@ -21,7 +22,7 @@ state : struct {
 	position: vec3
 	latitude: f32
 	longitude: f32
-} = (position = (0, 0, -3))
+} = (position = (0, 0, 0.5))
 
 input : struct {
 	mousePos: vec2
@@ -67,10 +68,10 @@ init :: fn() {
 	println("gfx setup called")
 
 	verts := [
-        -0.5,  0.5, -0.5,     1.0, 0.0, 0.0,
-         0.5,  0.5, -0.5,     0.0, 1.0, 0.0,
-         0.5, -0.5, -0.5,     0.0, 0.0, 1.0,
-        -0.5, -0.5, -0.5,     1.0, 1.0, 0.0,
+        -0.5,  0.5, 0,     1.0, 0.0, 0.0,
+         0.5,  0.5, 0,     0.0, 1.0, 0.0,
+         0.5, -0.5, 0,     0.0, 0.0, 1.0,
+        -0.5, -0.5, 0,     1.0, 1.0, 0.0,
     ]
 
 	indices : [6]u16 = [0, 1, 2, 0, 2, 3]
@@ -201,13 +202,8 @@ frame :: fn() {
 	movement := vec3(
 		if (input.left) -1 else if (input.right) 1 else 0,
 		0,
-		if (input.backward) -1 else if (input.forward) 1 else 0
+		if (input.backward) 1 else if (input.forward) -1 else 0
 	)
-
-	state.position.x +=  movement.x * deltaTime
-	state.position.y += -movement.z * deltaTime
-	# printHex(@bitCast(state.position.x))
-	# println("")
 
 	# cuda
 	handle : cu.fftHandle = 0
@@ -234,20 +230,21 @@ frame :: fn() {
 	w := app.widthf()
 	h := app.heightf()
 	aspect := w/h
-	proj := Perspective(1. / 6., aspect, 0.01, 10)
-	camera := InvTranslate(Translate(state.position))
-	# rotation := quatFromLatitude(state.latitude, state.longitude)
-	rotation := Q(5., 2., 1., 1.)
-	rotation.print()
-
-	# rotation = InvQ(rotation)
-	# camera = MulM4(camera, QToM4(rotation))
+	rotation := quat.geographic(state.latitude, state.longitude)
 	rotMat := QToM4(rotation)
-	printHex @bitCast(rotMat[0][0])
-	printHex @bitCast(rotMat[0][1])
-	printHex @bitCast(rotMat[0][2])
-	printHex @bitCast(rotMat[0][3])
-	mvp := proj camera
+	# rotatedMvmt := MulM4V4(InvRotate(rotMat), (movement.x, movement.y, movement.z, 0))
+	# translationAmount := vec3(rotatedMvmt.x, rotatedMvmt.y, rotatedMvmt.z)
+	translationAmount := RotateV3Q(movement, rotation.inverse())
+	translationAmount.print()
+	translationAmount = MulV3F(translationAmount, deltaTime)
+
+	state.position = AddV3(state.position, translationAmount)
+
+	proj := Perspective(1. / 6., aspect, 0.01, 100)
+
+	camera := Translate(MulV3F(state.position, -1))
+
+	mvp := proj rotMat camera
 
 	uniformRange := sg.range(^mvp, @type(mvp).size)
 	sg.apply_uniforms(0, ^uniformRange)
@@ -262,33 +259,33 @@ frame :: fn() {
 
 event :: fn(e: ^app.event) {
 	when (e.type) {
-		.MOUSE_DOWN => {
+		.MOUSE_DOWN -> {
 			println("mouse down")
 			input.mouseDown = true
 		}
-		.MOUSE_UP => {
+		.MOUSE_UP -> {
 			println("mouse up")
 			input.mouseDown = false
 		}
-		.KEY_DOWN => {
+		.KEY_DOWN -> {
 			when (e.key_code) {
-				.W => input.forward
-				.A => input.left
-				.S => input.backward
-				.D => input.right
-				else => return
+				.W -> input.forward
+				.A -> input.left
+				.S -> input.backward
+				.D -> input.right
+				else -> return
 			} = true
 		}
-		.KEY_UP => {
+		.KEY_UP -> {
 			when (e.key_code) {
-				.W => input.forward
-				.A => input.left
-				.S => input.backward
-				.D => input.right
-				else => return
+				.W -> input.forward
+				.A -> input.left
+				.S -> input.backward
+				.D -> input.right
+				else -> return
 			} = false
 		}
-		.MOUSE_MOVE => if (input.mouseDown) {
+		.MOUSE_MOVE -> if (input.mouseDown) {
 			dt := deltaTime * .2
 			state.latitude += e.mouse_dx * dt
 			state.longitude += e.mouse_dy * dt
