@@ -11,7 +11,7 @@ println :: fn(buf: []u8) {
 }
 
 print_u32 :: fn(x: u32) {
-	buf : [10]u8 = ---
+	buf : [10]u8
 	if (x == 0) {
 		buf[9] = 48
 		print(buf[9.<])
@@ -28,7 +28,7 @@ print_u32 :: fn(x: u32) {
 }
 
 print_s32 :: fn(x: s32) {
-	buf : [11]u8 = ---
+	buf : [11]u8
 	if (x == 0) {
 		buf[10] = 48
 		print(buf[10.<])
@@ -50,7 +50,7 @@ print_s32 :: fn(x: s32) {
 }
 
 printBin :: fn(x: u32) {
-	buf : [32]u8 = ---
+	buf : [32]u8
 	i: u32 = 0
 	y := x
 	while (i < 32) {
@@ -64,16 +64,16 @@ printBin :: fn(x: u32) {
 }
 
 printHex :: fn(x: u32) {
-	buf : [8]u8 = ---
+	buf : [8]u8
 	i: u32 = 0
 	y := x
 	while (i < 8) {
-		digit: u8 = @numCast(y % 16)
-		buf[7-i] = digit + (if (digit < 10) 48 else 55)
+		# digit: u8 = 
+		digit := y % 16
+		buf[7-i] = @numCast(digit + (if (digit < 10) 48 else 55))
 		y = y / 16
 		i = i + 1
 	}
-
 	println(buf[0.<])
 }
 

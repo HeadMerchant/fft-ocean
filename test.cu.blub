@@ -1,1 +1,3 @@
-
+hola :: kernel(x: u32) {
+	
+}

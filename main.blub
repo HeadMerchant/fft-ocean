@@ -2,6 +2,8 @@ cu :: import "cuda.blub"
 gl :: import "gl.blub"
 sg :: gl.sg
 
+using import "math.blub"
+
 app :: @cImport("sokol/sokol_app.h", "sapp_")
 time :: @cImport("sokol/sokol_time.h", "stm_")
 log :: @cImport("sokol/sokol_log.h", "slog_")
@@ -11,9 +13,21 @@ log :: @cImport("sokol/sokol_log.h", "slog_")
 
 glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
-using import "math.blub"
 using import "fmt.blub"
 kernels :: @cudaImport "test.cu.blub"
+
+sg.resource_state impl {
+	print :: fn(self: Self) {
+		print(when(self) {
+			.INITIAL -> "INITIAL"
+			.ALLOC   -> "ALLOC"
+			.VALID   -> "VALID"
+			.FAILED  -> "FAILED"
+			.INVALID -> "INVALID"
+			else     -> "yo"
+		})
+	}
+}
 
 state : struct {
     pip: sg.pipeline
@@ -38,23 +52,46 @@ cleanup :: fn() {
 	sg.shutdown()
 }
 
-vs := \"#version 410
-	\"uniform vec4 mvp[4];
-    \"layout(location = 0) in vec3 position;
-    \"layout(location = 0) out vec4 color;
-    \"layout(location = 1) in vec4 color0;
-    \"void main() {
-	\"    //gl_Position = vec4(position, 1.);
-	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
-	\"    color = color0;
-    \"}\x00
 
-fs := \"#version 410
-    \"layout(location = 0) out vec4 frag_color;
-    \"layout(location = 0) in vec4 color;
-    \"void main() {
-    \"    frag_color = color;
-    \"}\x00
+
+vs := "
+#version 410
+uniform vec4 mvp[4];
+layout(location = 0) in vec3 position;
+layout(location = 0) out vec4 color;
+layout(location = 1) in vec4 color0;
+void main() {
+    //gl_Position = vec4(position, 1.);
+    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
+    color = color0;
+}\x00"
+
+# vs := \"#version 410
+# 	\"uniform vec4 mvp[4];
+# 	\"layout(location = 0) in vec3 position;
+# 	\"layout(location = 0) out vec4 color;
+# 	\"layout(location = 1) in vec4 color0;
+# 	\"void main() {
+# 	\"    //gl_Position = vec4(position, 1.);
+# 	\"    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
+# 	\"    color = color0;
+# 	\"}\x00
+
+fs := "
+#version 410
+layout(location = 0) out vec4 frag_color;
+layout(location = 0) in vec4 color;
+void main() {
+    frag_color = color;
+}\x00"
+
+
+# fs := \"#version 410
+#     \"layout(location = 0) out vec4 frag_color;
+#     \"layout(location = 0) in vec4 color;
+#     \"void main() {
+#     \"    frag_color = color;
+#     \"}\x00
 
 startTime : u64 = 0
 
@@ -129,14 +166,8 @@ init :: fn() {
 	vertBuffer := sg.make_buffer(^vertBufferDesc)
 	indexBuffer := sg.make_buffer(^indexBufferDesc)
 	state.bind.vertex_buffers[0] = vertBuffer
-	print("Vertex buffer state:")
-	bufferState := sg.query_buffer_state(vertBuffer)
-
-	if (bufferState == .INITIAL) println("INITIAL")
-	else if (bufferState == .ALLOC) println("ALLOC")
-	else if (bufferState == .VALID) println("VALID")
-	else if (bufferState == .FAILED) println("FAILED")
-	else if (bufferState == .INVALID) println("INVALID")
+	print("Vertex buffer state: ")
+	sg.query_buffer_state(vertBuffer).print()
 
 	state.bind.index_buffer = indexBuffer
 
@@ -178,11 +209,19 @@ init :: fn() {
 		),
 		index_type = .UINT16,
 	)
+	print("Shader creation: ")
+	sg.query_shader_state(pipelineDesc.shader).print()
+	println("")
 
 	pipelineDesc.layout.attrs[0].format = .FLOAT3
 	pipelineDesc.layout.attrs[1].format = .FLOAT3
 
 	state.pip = sg.make_pipeline(^pipelineDesc)
+	if (state.pip.id == 0) {
+		print("Failed to make pipeline")
+	} else {
+		print("Made pipeline")
+	}
 
 	state.passAction.colors[0] = (
 		load_action = .CLEAR,
