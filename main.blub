@@ -274,7 +274,7 @@ frame :: fn() {
 	# rotatedMvmt := MulM4V4(InvRotate(rotMat), (movement.x, movement.y, movement.z, 0))
 	# translationAmount := vec3(rotatedMvmt.x, rotatedMvmt.y, rotatedMvmt.z)
 	translationAmount := RotateV3Q(movement, rotation.inverse())
-	translationAmount.print()
+	# translationAmount.print()
 	translationAmount = MulV3F(translationAmount, deltaTime)
 
 	state.position = AddV3(state.position, translationAmount)
@@ -332,7 +332,8 @@ event :: fn(e: ^app.event) {
 	}
 }
 
-sokol_main :: fn(argc: s32, argv: [^][^]u8) -> app.desc {
+# TODO: read automatic linkage names
+sokol_main :: fn "sokol_main"(argc: s32, argv: [^][^]u8) -> app.desc {
 	return (
 		init_cb = init,
 		frame_cb = frame,

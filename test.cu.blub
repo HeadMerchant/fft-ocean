@@ -1,3 +1,149 @@
-hola :: kernel(x: u32) {
-	
+complex :: struct {
+	a: f32
+	b: f32
+} impl {
+	multiply :: fn(A: Self, B: Self) -> Self {
+		return (
+			A.a B.a - A.b B.b,
+			A.a B.b + A.b B.a
+		)
+	}
+
+	add :: fn(A: Self, B: Self) -> Self {
+		return (A.a + B.a, A.b + B.b)
+	}
 }
+
+sqrt :: fn "llvm.sqrt.f32"(x: f32) -> f32
+exp :: fn "llvm.exp.f32"(x: f32) -> f32
+pow :: fn "llvm.pow.f32"(a: f32, b: f32) -> f32
+min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
+max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
+tanh :: fn "llvm.tanh.f32"(x: f32) -> f32
+
+# G :: 9.8
+# JonSwap :: struct {
+# 	gamma: f32
+# 	alpha: f32
+# 	peakOmega: f32
+#     scale: f32  # Used to scale the Spectrum [1.0f, 5.0f] --> Value Range
+#     spreadBlend: f32  # Used to blend between agitated water motion, and windDirection [0.0f, 1.0f]
+#     swell: f32  # Influences wave choppines, the bigger the swell, the longer the wave length [0.0f, 1.0f]
+#     gamma: f32  # Defines the Spectrum Peak [0.0f, 7.0f]
+#     shortWavesFade: f32  # [0.0f, 1.0f]
+
+#     windDirection: f32  # [0.0f, 360.0f]
+#     fetch: f32  # Distance over which Wind impacts Wave Formation [0.0f, 10000.0f]
+#     windSpeed: f32  # [0.0f, 100.0f]
+    
+#     angle: f32 
+#     alpha: f32 
+#     peakOmega: f32 
+# }
+
+# computeParams : JonSwap = ()
+
+# dispersionRelation :: fn(kMag: f32) -> f32 {
+#     return sqrt(G * kMag * tanh(min(kMag * computeParams.depth, 20)))
+# }
+
+# dispersionDerivative :: fn(kMag: f32) -> f32 {
+#     th := tanh(min(kMag * computeParams.depth, 20))
+#     ch := cosh(kMag * computeParams.depth)
+#     return G * (computeParams.depth * kMag / ch / ch + th) / DispersionRelation(kMag) / 2
+# }
+
+# normalizationFactor :: fn(s: f32) -> f32 {
+#     float s2 = s * s;
+#     float s3 = s2 * s;
+#     float s4 = s3 * s;
+#     if (s < 5) return -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163
+#     else return -4.80e-08 * s4 + 1.07e-05 * s3 - 9.53e-04 * s2 + 5.90e-02 * s + 3.93e-01
+# }
+
+# cosine2s :: fn(theta: f32, s: f32) -> {
+# 	return normalizationFactor(s) * pow(abs(cos(0.5f * theta)), 2.0 * s)
+# }
+
+# spreadPower :: fn(omega: f32, peakOmega: f32) -> f32 {
+# 	if (omega > peakOmega)
+# 		return 9.77f * pow(abs(omega / peakOmega), -2.5)
+# 	else
+# 		return 6.97f * pow(abs(omega / peakOmega), 5.0)
+# }
+
+# directionSpectrum :: fn(theta: f32, omega: f32) -> f32  {
+# 	s := spreadPower(omega, jonswapParams->peakOmega) + 16 * tanh(min(omega / jonswapParams->peakOmega, 20)) * jonswapParams->swell * jonswapParams->swell;
+	
+# 	return lerp(2.0f / 3.1415f * cos(theta) * cos(theta), Cosine2s(theta - jonswapParams->angle, s), jonswapParams->spreadBlend);
+# }
+
+# tmaCorrection :: fn(omega: f32) -> f32 {
+# 	omegaH := omega * sqrt(computeParams->depth / G)
+# 	if (omegaH <= 1.0)
+# 		return 0.5 * omegaH * omegaH
+# 	if (omegaH < 2.0)
+# 		return 1 - 0.5 * (2.0 - omegaH) * (2.0 - omegaH)
+	
+# 	return 1
+# }
+
+# float JONSWAP(float omega) {
+# 	float sigma = (omega <= jonswapParams->peakOmega) ? 0.07f : 0.09f;
+	
+# 	float r = exp(-(omega - jonswapParams->peakOmega) * (omega - jonswapParams->peakOmega) / 2.0f / sigma / sigma / jonswapParams->peakOmega / jonswapParams->peakOmega);
+	
+# 	float oneOverOmega = 1.0f / (omega + 1e-6f);
+# 	float peakOmegaOverOmega = jonswapParams->peakOmega / omega;
+# 	return jonswapParams->scale * TMACorrection(omega) * jonswapParams->alpha * G * G
+# 		* oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega
+# 		* exp(-1.25f * peakOmegaOverOmega * peakOmegaOverOmega * peakOmegaOverOmega * peakOmegaOverOmega)
+# 		* pow(abs(jonswapParams->gamma), r);
+# }
+
+# float ShortWavesFade(float kLength) {
+# 	return exp(-jonswapParams->shortWavesFade * jonswapParams->shortWavesFade * kLength * kLength);
+# }
+
+# void main(uint2 threadID)
+# {
+# 	float halfN = SPECTRUM_TEX_SIZE / 2.0f;
+	
+# 	float2 gauss1 = GetGaussianRandNumber();
+# 	float2 gauss2 = GetGaussianRandNumber();
+	
+# 	float deltaK = 2.0f * PI / LENGTH_SCALE;
+# 	float2 K = (threadID.xy - halfN) * deltaK;
+# 	float kLength = length(K);
+# 	if (lowCutoff <= kLength and kLength <= highCutoff)
+# 	{
+# 		float kAngle = atan2(K.y, K.x);
+# 		float omega = DispersionRelation(kLength);
+# 		float dOmegadk = DispersionDerivative(kLength);
+		
+# 		float spectrum = JONSWAP(omega) * DirectionSpectrum(kAngle, omega) * ShortWavesFade(kLength);
+		
+# 		initial_spectrum[threadID.xy] = float4(float2(gauss2.x, gauss1.y) * float2(sqrt(2 * spectrum * abs(dOmegadk) / kLength * deltaK * deltaK)), 0.0f, 0.0f);
+# 	}
+# 	else
+# 	{
+# 		initial_spectrum[threadID.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+# 	}
+# }
+
+# dispersionRelation :: fn(kMag: f32) -> f32 {
+# 	return sqrt G kMag tanh min (kMag)
+# }
+
+# f32 impl {
+# 	multiply :: fn(a: f32, b: complex) -> complex {
+# 		return (a*b.a, a*b.b)
+# 	}
+# }
+
+# # hola :: kernel(x: u32) {
+# # }
+
+# holaC2C :: kernel(a: f32, b: complex) {
+# 	# a b + b b
+# }
