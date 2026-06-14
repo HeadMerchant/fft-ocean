@@ -18,14 +18,7 @@ kernels :: @cudaImport "test.cu.blub"
 
 sg.resource_state impl {
 	print :: fn(self: Self) {
-		print(when(self) {
-			.INITIAL -> "INITIAL"
-			.ALLOC   -> "ALLOC"
-			.VALID   -> "VALID"
-			.FAILED  -> "FAILED"
-			.INVALID -> "INVALID"
-			else     -> "yo"
-		})
+		print(@name self)
 	}
 }
 
@@ -38,15 +31,31 @@ state : struct {
 	longitude: f32
 } = (position = (0, 0, 0.5))
 
-input : struct {
+Input :: struct {
 	mousePos: vec2
 	mouseDown: bool
 	forward: bool
 	backward: bool
 	left: bool
 	right: bool
+	up: bool
+	down: bool
 	mouseDelta: vec2
-} = ()
+} impl {
+	press :: fn(self: ^Self, keycode: app.keycode, pressed: bool) {
+		when (keycode) {
+			.W -> input.forward
+			.A -> input.left
+			.S -> input.backward
+			.D -> input.right
+			.SPACE -> input.up
+			.LEFT_SHIFT -> input.down
+			.RIGHT_SHIFT -> input.down
+			else -> return
+		} = pressed
+	}
+}
+input := Input()
 
 cleanup :: fn() {
 	sg.shutdown()
@@ -111,7 +120,7 @@ init :: fn() {
         -0.5, -0.5, 0,     1.0, 1.0, 0.0,
     ]
 
-	indices : [6]u16 = [0, 1, 2, 0, 2, 3]
+	indices := [0, 1, 2, 0, 2, 3]u16
 
 	# verts := [
  #        -1.0, -1.0, -1.0,   1.0, 0.0, 0.0,
@@ -168,6 +177,7 @@ init :: fn() {
 	state.bind.vertex_buffers[0] = vertBuffer
 	print("Vertex buffer state: ")
 	sg.query_buffer_state(vertBuffer).print()
+	println("")
 
 	state.bind.index_buffer = indexBuffer
 
@@ -240,20 +250,15 @@ frame :: fn() {
 	deltaTime = seconds - prevTime
 	movement := vec3(
 		if (input.left) -1 else if (input.right) 1 else 0,
-		0,
+		if (input.up) 1 else if (input.down) -1 else 0,
 		if (input.backward) 1 else if (input.forward) -1 else 0
 	)
 
 	# cuda
 	handle : cu.fftHandle = 0
 	result := cu.plan2d(^handle, 16, 16, .C2C)
-	if (result == .Success) {
-		# print_u32(@numCast(time.since(startTime)))
-		# println("")
-		# println("FFT success!!!")
-	} else {
-		println("Failed fft")
-	}
+	# print("FFT result: ")
+	# println @name result
 
 	# colors
 	red := sin 2. seconds
@@ -270,9 +275,7 @@ frame :: fn() {
 	h := app.heightf()
 	aspect := w/h
 	rotation := quat.geographic(state.latitude, state.longitude)
-	rotMat := QToM4(rotation)
-	# rotatedMvmt := MulM4V4(InvRotate(rotMat), (movement.x, movement.y, movement.z, 0))
-	# translationAmount := vec3(rotatedMvmt.x, rotatedMvmt.y, rotatedMvmt.z)
+	rotMat := rotation.toMatrix()
 	translationAmount := RotateV3Q(movement, rotation.inverse())
 	# translationAmount.print()
 	translationAmount = MulV3F(translationAmount, deltaTime)
@@ -306,24 +309,8 @@ event :: fn(e: ^app.event) {
 			println("mouse up")
 			input.mouseDown = false
 		}
-		.KEY_DOWN -> {
-			when (e.key_code) {
-				.W -> input.forward
-				.A -> input.left
-				.S -> input.backward
-				.D -> input.right
-				else -> return
-			} = true
-		}
-		.KEY_UP -> {
-			when (e.key_code) {
-				.W -> input.forward
-				.A -> input.left
-				.S -> input.backward
-				.D -> input.right
-				else -> return
-			} = false
-		}
+		.KEY_DOWN -> input.press(e.key_code, true)
+		.KEY_UP -> input.press(e.key_code, false)
 		.MOUSE_MOVE -> if (input.mouseDown) {
 			dt := deltaTime * .2
 			state.latitude += e.mouse_dx * dt
@@ -334,6 +321,8 @@ event :: fn(e: ^app.event) {
 
 # TODO: read automatic linkage names
 sokol_main :: fn "sokol_main"(argc: s32, argv: [^][^]u8) -> app.desc {
+	device: cu.Device
+	module := device.init()
 	return (
 		init_cb = init,
 		frame_cb = frame,

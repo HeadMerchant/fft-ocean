@@ -1,11 +1,50 @@
 @cIncludeDir("/opt/cuda/include")
 @linkDir("/opt/cuda/lib64")
+@link("cuda")
 @link("cufft")
 @link("cudart")
+fmt :: import "fmt.blub"
 
 Error :: enum(s32) {
-	Success,
-	Error
+	Success
+	Invalid
+	OoM
+	NotInitialized
+	Deinitialized
+	ProfilerDisabled
+	ProfilerNotInitialized
+	ProfilerAlreadyStarted
+	ProfileAlreadyStopped
+	StubLibrary = 34
+	RequiresNewerDriver = 36
+	DeviceUnavailable = 46
+	NoDevice = 100
+	InvalidDevice
+	DeviceNotLicensed
+	InvalidImage = 200
+	InvalidContext
+	ContextAlreadyCurrent
+	MapFailed = 205
+	UnmapFailed
+	ArrayIsMapped
+	AlreadyMapped
+	NoBinaryForGpu
+	AlreadyAcquired
+	NotMapped
+	NotMappedAsArray
+	NotMappedAsPointer
+	EccUncorrectable
+	UnsupportedLimit
+	ContextAlreadyInUse
+	PeerAccessUnsupported
+	InvalidPtx
+	InvalidGraphicsContext
+	NvlinkUncorrectable
+	JitCompilerNotFound
+} impl {
+	log :: fn(self: Self) {
+		println @name self
+	}
 }
 
 float2 :: struct {
@@ -16,32 +55,32 @@ float2 :: struct {
 fftHandle :: s32
 
 fftType :: enum(s32) {
-	R2C = 0x2a,
-	C2R = 0x2c,
-	C2C = 0x29,
-	D2Z = 0x6a,
-	Z2D = 0x6c,
+	R2C = 0x2a
+	C2R = 0x2c
+	C2C = 0x29
+	D2Z = 0x6a
+	Z2D = 0x6c
 	Z2Z = 0x69
 }
 
 fftResult :: enum(s32) {
-	Success = 0x0,
-	InvalidPlan = 0x1,
-	AllocFailed = 0x2,
-	InvalidType = 0x3,
-	InvalidValue = 0x4,
-	InternalError = 0x5,
-	ExecFailed = 0x6,
-	SetupFailed = 0x7,
-	InvalidSize = 0x8,
-	UnalignedData = 0x9,
-	InvalidDevice = 0xB,
-	NoWorkspace = 0xD,
-	NotImplemented = 0xE,
-	NotSupported = 0x10,
-	MissingDependency = 0x11,
-	NvRtcFailure = 0x12,
-	NvJitLinkFailure = 0x13,
+	Success = 0x0
+	InvalidPlan = 0x1
+	AllocFailed = 0x2
+	InvalidType = 0x3
+	InvalidValue = 0x4
+	InternalError = 0x5
+	ExecFailed = 0x6
+	SetupFailed = 0x7
+	InvalidSize = 0x8
+	UnalignedData = 0x9
+	InvalidDevice = 0xB
+	NoWorkspace = 0xD
+	NotImplemented = 0xE
+	NotSupported = 0x10
+	MissingDependency = 0x11
+	NvRtcFailure = 0x12
+	NvJitLinkFailure = 0x13
 	NvshmemFailure = 0x14
 }
 
@@ -49,11 +88,109 @@ malloc :: fn "cudaMalloc"(ptr: ^^f32, size: usize) -> Error
 plan2d :: fn "cufftPlan2d"(plan: ^fftHandle, cols: s32, rows: s32, type: fftType) -> fftResult
 
 memcpyKind :: enum(s32) {
-	HostToHost,
-	HostToDevice,
-	DeviceToHost,
-	DeviceToDevice,
+	HostToHost
+	HostToDevice
+	DeviceToHost
+	DeviceToDevice
 	Default
 }
 
 memcpy :: fn "cudaMemcpy"(dst: ^void, src: ^void, size: usize, kind: memcpyKind) -> Error
+Device :: s32
+Context :: struct {ptr: ^opaque}
+Module :: struct {ptr: ^opaque}
+Kernel :: struct {ptr: ^opaque}
+
+init :: fn "cuInit"(flags: u32) -> Error
+deviceGet :: fn "cuDeviceGet"(device: ^Device, ordinal: u32) -> Error
+ctxCreate :: fn "cuCtxCreate"(
+	ctx: ^Context,
+	params: struct {
+		affinityParam: ^opaque
+		numExecAffinityParams: s32
+		cigParams: ^opaque
+	},
+	flags: u32,
+	device: Device
+) -> Error
+
+loadModule :: fn "cuModuleLoadData"(module: ^Module, image: ^void) -> Error
+getFunction :: fn "cuModuleGetFunction"(
+	hfunc: ^Kernel,
+	hmod: Module,
+	name: ^u8
+) -> Error
+
+Module impl {
+	loadKernel :: fn(self: Self, name: ^u8) -> Kernel {
+		resultKernel: Kernel
+		getFunction(^resultKernel, self, name)
+		return resultKernel
+	}
+}
+
+Grid :: struct {
+	x: u32
+	y: u32
+	z: u32
+} impl {
+	of :: fn(size: u32) -> Self {
+		return (size, size, size)
+	}
+}
+
+Block :: struct {
+	x: u32
+	y: u32
+	z: u32
+} impl {
+	of :: fn(size: u32) -> Self {
+		return (size, size, size)
+	}
+}
+
+Stream :: ^opaque
+
+launchKernel :: fn "cuLaunchKernel"(
+	f: Kernel,
+    gridDimX: u32,
+    gridDimY: u32,
+    gridDimZ: u32,
+    blockDimX: u32,
+    blockDimY: u32,
+    blockDimZ: u32,
+    sharedMemBytes: u32,
+    hStream: Stream,
+    kernelParams: [^]^void,
+    extra: ^^void,
+) -> Error
+
+sync :: fn "cuCtxSynchronize"()
+Kernel impl {
+	launch :: fn (self: Self, args: [^]^void, grid: Grid, block: Block, sharedMem: u32) {
+		launchKernel(self, grid.x, grid.y, grid.z, block.x, block.y, block.z, sharedMem, null, args, null)
+	}
+
+	launchAndSync :: fn(self: Self, args: [^]^void, grid: Grid, block: Block, sharedMem: u32) {
+		self.launch(args, grid, block, sharedMem)
+		sync()
+	}
+}
+
+Device impl {
+	init :: fn(self: ^Self, moduleName: ^u8) -> Module {
+		using fmt
+		println("Initializing CUDA")
+		init(0).log()
+		println("Getting CUDA device")
+		deviceGet(self, 0).log()
+		context : Context
+		println("Creating CUDA context")
+		ctxCreate(^context, (), 0, self^).log()
+		module : Module
+		println("Loading CUDA module")
+		loadModule(^module, moduleName).log()
+		return module
+	}
+}
+

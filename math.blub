@@ -48,6 +48,7 @@ quat impl {
 		return quat(0, lat.y, 0, lat.x) quat(lon.y, 0, 0, lon.x)
 	}
 	dot :: DotQ
+	toMatrix :: QToM4
 }
 
 mat4 impl {
