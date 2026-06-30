@@ -14,7 +14,480 @@ log :: @cImport("sokol/sokol_log.h", "slog_")
 glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 using import "fmt.blub"
-kernels :: @cudaImport "test.cu.blub"
+kernels := @cudaImport "tessendorf_ocean.cu.blub"
+
+OceanResolution :: 16
+OceanElementCount :: 256
+FftInverse :: 1
+
+OceanFloat2 :: struct {
+	x: f32
+	y: f32
+}
+
+OceanFloat4 :: struct {
+	x: f32
+	y: f32
+	z: f32
+	w: f32
+}
+
+OceanComplex :: struct {
+	re: f32
+	im: f32
+}
+
+OceanSpectrumParams :: struct {
+	resolution: u32
+	patchLength: f32
+	time: f32
+	amplitude: f32
+	windSpeed: f32
+	windDirection: OceanFloat2
+	depth: f32
+	shortWaveDamp: f32
+	choppiness: f32
+	heightScale: f32
+}
+
+OceanCudaState :: struct {
+	device: cu.Device
+	module: cu.Module
+	initializeSpectrum: cu.Kernel
+	evolveSpectrum: cu.Kernel
+	writeDisplacementToTexture: cu.Kernel
+	extractSpatialFields: cu.Kernel
+	inversePlan: cu.fftHandle
+	params: OceanSpectrumParams
+	gaussian0: ^OceanFloat2
+	gaussian1: ^OceanFloat2
+	h0: ^OceanComplex
+	omega: ^f32
+	heightSpectrum: ^OceanComplex
+	displacementXSpectrum: ^OceanComplex
+	displacementZSpectrum: ^OceanComplex
+	heightField: ^f32
+	displacementXField: ^f32
+	displacementZField: ^f32
+	slopeXField: ^f32
+	slopeZField: ^f32
+	textureResource: cu.GraphicsResource
+	textureArray: cu.Array
+	initialized: bool
+}
+
+ocean : OceanCudaState
+startupFrameLogged : bool = false
+oceanDebugLogged : bool = false
+oceanSpectrumDebugLogged : bool = false
+oceanInitDebugLogged : bool = false
+
+startupLog :: fn(message: []u8) {
+	print("[startup] ")
+	println(message)
+}
+
+startupValue :: fn(label: []u8, value: s32) {
+	print("[startup] ")
+	print(label)
+	print(": ")
+	print_s32(value)
+	println("")
+}
+
+bufferBytes :: fn(elementSize: usize) -> usize {
+	return @numCast(OceanElementCount, usize) * elementSize
+}
+
+allocDeviceBuffer :: fn(target: ^^void, size: usize) {
+	rawPointer: cu.DevicePointer
+	cu.memAlloc(^rawPointer, size).log()
+	target^ = @bitCast(rawPointer, ^void)
+}
+
+allocRawDevicePointer :: fn(size: usize) -> cu.DevicePointer {
+	result: cu.DevicePointer
+	cu.memAlloc(^result, size).log()
+	return result
+}
+
+allocRawDeviceBuffer :: fn(size: usize) -> ^void {
+	result: ^void
+	allocDeviceBuffer(^result, size)
+	return result
+}
+
+allocOceanFloat2Buffer :: fn(size: usize) -> ^OceanFloat2 {
+	return @bitCast(allocRawDeviceBuffer(size), ^OceanFloat2)
+}
+
+allocOceanComplexBuffer :: fn(size: usize) -> ^OceanComplex {
+	return @bitCast(allocRawDeviceBuffer(size), ^OceanComplex)
+}
+
+allocF32Buffer :: fn(size: usize) -> ^f32 {
+	return @bitCast(allocRawDeviceBuffer(size), ^f32)
+}
+
+copyHostToDevice :: fn(dst: ^void, src: ^void, size: usize) {
+	cu.memcpyHtoD(@bitCast(dst, cu.DevicePointer), src, size).log()
+}
+
+copyDeviceToHost :: fn(dst: ^void, src: ^void, size: usize) {
+	cu.memcpyDtoH(dst, @bitCast(src, cu.DevicePointer), size).log()
+}
+
+zeroDeviceBuffer :: fn(dst: cu.DevicePointer, size: usize) {
+	cu.memsetD8(dst, 0, size).log()
+}
+
+oceanGrid :: fn() -> cu.Grid {
+	return (
+		@numCast(OceanResolution / 8, u32),
+		@numCast(OceanResolution / 8, u32),
+		1,
+	)
+}
+
+oceanBlock :: fn() -> cu.Block {
+	return (8, 8, 1)
+}
+
+launchInitializeSpectrum :: fn() {
+	paramsArg := ocean.params
+	gaussian0Arg := ocean.gaussian0
+	gaussian1Arg := ocean.gaussian1
+	h0Arg := ocean.h0
+	omegaArg := ocean.omega
+	kernelArgs := [
+		^paramsArg,
+		^gaussian0Arg,
+		^gaussian1Arg,
+		^h0Arg,
+		^omegaArg,
+	]^void
+	ocean.initializeSpectrum.launchAndSync(kernelArgs[^], oceanGrid(), oceanBlock(), 0)
+}
+
+launchEvolveSpectrum :: fn() {
+	paramsArg := ocean.params
+	h0Arg := ocean.h0
+	omegaArg := ocean.omega
+	heightSpectrumArg := ocean.heightSpectrum
+	displacementXSpectrumArg := ocean.displacementXSpectrum
+	displacementZSpectrumArg := ocean.displacementZSpectrum
+	kernelArgs := [
+		^paramsArg,
+		^h0Arg,
+		^omegaArg,
+		^heightSpectrumArg,
+		^displacementXSpectrumArg,
+		^displacementZSpectrumArg,
+	]^void
+	ocean.evolveSpectrum.launchAndSync(kernelArgs[^], oceanGrid(), oceanBlock(), 0)
+}
+
+runInverseFft :: fn(spectrumBuffer: ^OceanComplex) {
+	cu.execC2C(
+		ocean.inversePlan,
+		spectrumBuffer,
+		spectrumBuffer,
+		FftInverse
+	).log()
+	cu.sync().log()
+}
+
+launchExtractSpatialFields :: fn() {
+	paramsArg := ocean.params
+	heightSpatialArg := ocean.heightSpectrum
+	displacementXSpatialArg := ocean.displacementXSpectrum
+	displacementZSpatialArg := ocean.displacementZSpectrum
+	heightFieldArg := ocean.heightField
+	displacementXFieldArg := ocean.displacementXField
+	displacementZFieldArg := ocean.displacementZField
+	slopeXFieldArg := ocean.slopeXField
+	slopeZFieldArg := ocean.slopeZField
+	kernelArgs := [
+		^paramsArg,
+		^heightSpatialArg,
+		^displacementXSpatialArg,
+		^displacementZSpatialArg,
+		^heightFieldArg,
+		^displacementXFieldArg,
+		^displacementZFieldArg,
+		^slopeXFieldArg,
+		^slopeZFieldArg,
+	]^void
+	ocean.extractSpatialFields.launchAndSync(kernelArgs[^], oceanGrid(), oceanBlock(), 0)
+}
+
+runOceanInverseFfts :: fn() {
+	runInverseFft(ocean.heightSpectrum)
+	runInverseFft(ocean.displacementXSpectrum)
+	runInverseFft(ocean.displacementZSpectrum)
+	launchExtractSpatialFields()
+}
+
+logOceanDebugSamples :: fn() {
+	if (oceanDebugLogged) {
+		return
+	}
+	samples : [8]f32
+	copyDeviceToHost(
+		@bitCast(^samples, ^void),
+		@bitCast(ocean.heightField, ^void),
+		@type(samples).size
+	)
+	print("[ocean] height samples: ")
+	printFloat(samples[0])
+	print(" ")
+	printFloat(samples[1])
+	print(" ")
+	printFloat(samples[2])
+	print(" ")
+	printFloat(samples[3])
+	println("")
+	oceanDebugLogged = true
+}
+
+logComplexSamples :: fn(label: []u8, buffer: ^OceanComplex, logged: ^bool) {
+	if (logged^) {
+		return
+	}
+	samples : [4]OceanComplex
+	copyDeviceToHost(
+		@bitCast(^samples, ^void),
+		@bitCast(buffer, ^void),
+		@type(samples).size
+	)
+	print("[ocean] ")
+	print(label)
+	print(": ")
+	printFloat(samples[0].re)
+	print(" ")
+	printFloat(samples[0].im)
+	print(" | ")
+	printFloat(samples[1].re)
+	print(" ")
+	printFloat(samples[1].im)
+	println("")
+	logged^ = true
+}
+
+launchWriteDisplacement :: fn() {
+	paramsArg := ocean.params
+	heightFieldArg := ocean.heightField
+	displacementXFieldArg := ocean.displacementXField
+	displacementZFieldArg := ocean.displacementZField
+	slopeXFieldArg := ocean.slopeXField
+	slopeZFieldArg := ocean.slopeZField
+	surfaceDesc := cu.ResourceDesc(
+		resType = .Array,
+		array = ocean.textureArray,
+	)
+	surfaceObject: cu.SurfaceObject
+	cu.createSurfaceObject(^surfaceObject, ^surfaceDesc).log()
+	surfaceArg := surfaceObject
+	kernelArgs := [
+		@bitCast(^paramsArg, ^void),
+		@bitCast(^heightFieldArg, ^void),
+		@bitCast(^displacementXFieldArg, ^void),
+		@bitCast(^displacementZFieldArg, ^void),
+		@bitCast(^slopeXFieldArg, ^void),
+		@bitCast(^slopeZFieldArg, ^void),
+		@bitCast(^surfaceArg, ^void),
+	]
+	ocean.writeDisplacementToTexture.launchAndSync(kernelArgs[^], oceanGrid(), oceanBlock(), 0)
+	cu.destroySurfaceObject(surfaceObject).log()
+}
+
+mapOceanTexture :: fn() {
+	cu.graphicsMapResources(1, ^ocean.textureResource, null).log()
+	cu.graphicsSubResourceGetMappedArray(^ocean.textureArray, ocean.textureResource, 0, 0).log()
+}
+
+unmapOceanTexture :: fn() {
+	cu.graphicsUnmapResources(1, ^ocean.textureResource, null).log()
+}
+
+setupOceanTexture :: fn() {
+	texture2dTarget: u32 = 0x0DE1
+	textureNearest: s32 = 0x2600
+	textureClampToEdge: s32 = 0x812F
+	surfaceLoadStoreFlag: u32 = 4
+	println("Gen textures")
+	gl.genTextures(1, ^state.oceanTexture)
+	println("Bind ocean tex")
+	gl.bindTexture(.Texture2D, state.oceanTexture)
+	gl.texParameteri(.Texture2D, .MinFilter, textureNearest)
+	gl.texParameteri(.Texture2D, .MagFilter, textureNearest)
+	gl.texParameteri(.Texture2D, .WrapS, textureClampToEdge)
+	gl.texParameteri(.Texture2D, .WrapT, textureClampToEdge)
+	println("Allocate immutable texture storage")
+	gl.texStorage2D(.Texture2D, 1, .Rgba32f, OceanResolution, OceanResolution)
+	gl.bindTexture(.Texture2D, 0)
+	println("Reset cache")
+	sg.reset_state_cache()
+
+	imageDesc := sg.image_desc(
+		usage = (immutable = true),
+		width = OceanResolution,
+		height = OceanResolution,
+		num_slices = 1,
+		num_mipmaps = 1,
+		pixel_format = .RGBA32F,
+		sample_count = 1,
+		gl_textures = [state.oceanTexture, 0],
+		gl_texture_target = texture2dTarget,
+		label = c"ocean-image"
+	)
+	state.oceanImage = sg.make_image(^imageDesc)
+	print("Ocean image state: ")
+	sg.query_image_state(state.oceanImage).print()
+	println("")
+	viewDesc := sg.view_desc(texture = (image = state.oceanImage), label = c"ocean-view")
+	println("Make view")
+	state.oceanView = sg.make_view(^viewDesc)
+	print("Ocean view state: ")
+	sg.query_view_state(state.oceanView).print()
+	println("")
+	println("Make sampler")
+	samplerDesc := sg.sampler_desc(
+		min_filter = .NEAREST,
+		mag_filter = .NEAREST,
+		mipmap_filter = .NEAREST,
+		label = c"ocean-sampler"
+	)
+	state.oceanSampler = sg.make_sampler(^samplerDesc)
+	state.bind.views[0] = state.oceanView
+	state.bind.samplers[0] = state.oceanSampler
+
+	println("Cuda image")
+	cu.graphicsGLRegisterImage(
+		^ocean.textureResource,
+		state.oceanTexture,
+		texture2dTarget,
+		surfaceLoadStoreFlag
+	).log()
+}
+
+setupOceanCuda :: fn() {
+	if (ocean.initialized) {
+		startupLog("cuda setup skipped")
+		return
+	}
+
+	startupLog("cuda setup begin")
+	ocean.params = (
+		resolution = @numCast(OceanResolution, u32),
+		patchLength = 256.0,
+		time = 0.0,
+		amplitude = 35.0,
+		windSpeed = 18.0,
+		windDirection = (1.0, 0.0),
+		depth = 200.0,
+		shortWaveDamp = 0.08,
+		choppiness = 1.25,
+		heightScale = 0.35,
+	)
+	startupLog("cuda params ready")
+
+	startupLog("cuda module init")
+	module := ocean.device.init(@cudaPtx(kernels))
+	ocean.module = module
+	startupLog("cuda module loaded")
+	startupLog("load kernel initializeSpectrum")
+	ocean.initializeSpectrum = module.loadKernel(kernels.initializeSpectrum)
+	startupLog("load kernel evolveSpectrum")
+	ocean.evolveSpectrum = module.loadKernel(kernels.evolveSpectrum)
+	startupLog("load kernel writeDisplacementToTexture")
+	ocean.writeDisplacementToTexture = module.loadKernel(kernels.writeDisplacementToTexture)
+	startupLog("load kernel extractSpatialFields")
+	ocean.extractSpatialFields = module.loadKernel(kernels.extractSpatialFields)
+	startupLog("cuda kernels loaded")
+	startupLog("create inverse fft plan")
+	cu.plan2d(^ocean.inversePlan, OceanResolution, OceanResolution, .C2C).log()
+
+	float2Bytes := bufferBytes(8)
+	complexBytes := bufferBytes(8)
+	floatBytes := bufferBytes(4)
+	startupValue("float2 bytes", @numCast(float2Bytes, s32))
+	startupValue("complex bytes", @numCast(complexBytes, s32))
+	startupValue("float bytes", @numCast(floatBytes, s32))
+
+	startupLog("alloc gaussian0")
+	gaussian0Raw := allocRawDevicePointer(float2Bytes)
+	startupLog("alloc gaussian1")
+	gaussian1Raw := allocRawDevicePointer(float2Bytes)
+	startupLog("alloc h0")
+	h0Raw := allocRawDevicePointer(complexBytes)
+	startupLog("alloc omega")
+	omegaRaw := allocRawDevicePointer(floatBytes)
+	startupLog("alloc heightSpectrum")
+	heightSpectrumRaw := allocRawDevicePointer(complexBytes)
+	startupLog("alloc displacementXSpectrum")
+	displacementXSpectrumRaw := allocRawDevicePointer(complexBytes)
+	startupLog("alloc displacementZSpectrum")
+	displacementZSpectrumRaw := allocRawDevicePointer(complexBytes)
+	startupLog("alloc heightField")
+	heightFieldRaw := allocRawDevicePointer(floatBytes)
+	startupLog("alloc displacementXField")
+	displacementXFieldRaw := allocRawDevicePointer(floatBytes)
+	startupLog("alloc displacementZField")
+	displacementZFieldRaw := allocRawDevicePointer(floatBytes)
+	startupLog("alloc slopeXField")
+	slopeXFieldRaw := allocRawDevicePointer(floatBytes)
+	startupLog("alloc slopeZField")
+	slopeZFieldRaw := allocRawDevicePointer(floatBytes)
+	startupLog("cuda buffers allocated")
+
+	startupLog("zero gaussian0")
+	zeroDeviceBuffer(gaussian0Raw, float2Bytes)
+	startupLog("zero gaussian1")
+	zeroDeviceBuffer(gaussian1Raw, float2Bytes)
+	startupLog("zero height field")
+	zeroDeviceBuffer(heightFieldRaw, floatBytes)
+	startupLog("zero displacementX field")
+	zeroDeviceBuffer(displacementXFieldRaw, floatBytes)
+	startupLog("zero displacementZ field")
+	zeroDeviceBuffer(displacementZFieldRaw, floatBytes)
+	startupLog("zero slopeX field")
+	zeroDeviceBuffer(slopeXFieldRaw, floatBytes)
+	startupLog("zero slopeZ field")
+	zeroDeviceBuffer(slopeZFieldRaw, floatBytes)
+
+	gaussian0 := @bitCast(gaussian0Raw, ^OceanFloat2)
+	gaussian1 := @bitCast(gaussian1Raw, ^OceanFloat2)
+	h0 := @bitCast(h0Raw, ^OceanComplex)
+	omega := @bitCast(omegaRaw, ^f32)
+	heightSpectrum := @bitCast(heightSpectrumRaw, ^OceanComplex)
+	displacementXSpectrum := @bitCast(displacementXSpectrumRaw, ^OceanComplex)
+	displacementZSpectrum := @bitCast(displacementZSpectrumRaw, ^OceanComplex)
+	heightField := @bitCast(heightFieldRaw, ^f32)
+	displacementXField := @bitCast(displacementXFieldRaw, ^f32)
+	displacementZField := @bitCast(displacementZFieldRaw, ^f32)
+	slopeXField := @bitCast(slopeXFieldRaw, ^f32)
+	slopeZField := @bitCast(slopeZFieldRaw, ^f32)
+
+	ocean.gaussian0 = gaussian0
+	ocean.gaussian1 = gaussian1
+	ocean.h0 = h0
+	ocean.omega = omega
+	ocean.heightSpectrum = heightSpectrum
+	ocean.displacementXSpectrum = displacementXSpectrum
+	ocean.displacementZSpectrum = displacementZSpectrum
+	ocean.heightField = heightField
+	ocean.displacementXField = displacementXField
+	ocean.displacementZField = displacementZField
+	ocean.slopeXField = slopeXField
+	ocean.slopeZField = slopeZField
+	startupLog("launch initializeSpectrum")
+
+	launchInitializeSpectrum()
+	logComplexSamples("h0", ocean.h0, ^oceanInitDebugLogged)
+	ocean.initialized = true
+	startupLog("cuda setup complete")
+}
 
 sg.resource_state impl {
 	print :: fn(self: Self) {
@@ -26,6 +499,10 @@ state : struct {
     pip: sg.pipeline
     bind: sg.bindings
     passAction: sg.pass_action
+	oceanImage: sg.image
+	oceanView: sg.view
+	oceanSampler: sg.sampler
+	oceanTexture: u32
 	position: vec3
 	latitude: f32
 	longitude: f32
@@ -58,6 +535,10 @@ Input :: struct {
 input := Input()
 
 cleanup :: fn() {
+	if (state.oceanTexture != 0) {
+		cu.graphicsUnregisterResource(ocean.textureResource).log()
+		gl.deleteTextures(1, ^state.oceanTexture)
+	}
 	sg.shutdown()
 }
 
@@ -65,14 +546,12 @@ cleanup :: fn() {
 
 vs := "
 #version 410
-uniform vec4 mvp[4];
 layout(location = 0) in vec3 position;
-layout(location = 0) out vec4 color;
-layout(location = 1) in vec4 color0;
+layout(location = 1) in vec2 uv0;
+layout(location = 0) out vec2 uv;
 void main() {
-    //gl_Position = vec4(position, 1.);
-    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * vec4(position, 1.);
-    color = color0;
+    gl_Position = vec4(position, 1.);
+    uv = uv0;
 }\x00"
 
 # vs := \"#version 410
@@ -88,10 +567,13 @@ void main() {
 
 fs := "
 #version 410
+uniform sampler2D ocean_tex;
 layout(location = 0) out vec4 frag_color;
-layout(location = 0) in vec4 color;
+layout(location = 0) in vec2 uv;
 void main() {
-    frag_color = color;
+    vec4 ocean = texture(ocean_tex, uv);
+    float h = ocean.y;
+    frag_color = vec4(vec3(h * 6.0 + 0.5), 1.0);
 }\x00"
 
 
@@ -105,19 +587,20 @@ void main() {
 startTime : u64 = 0
 
 init :: fn() {
-	println("Starting window")
+	startupLog("init begin")
 	desc := sg.desc(
 		environment = glueEnv(),
 		logger = (func = log.func)
 	)
+	startupLog("calling sg.setup")
 	sg.setup(^desc)
-	println("gfx setup called")
+	startupLog("sg.setup complete")
 
 	verts := [
-        -0.5,  0.5, 0,     1.0, 0.0, 0.0,
-         0.5,  0.5, 0,     0.0, 1.0, 0.0,
-         0.5, -0.5, 0,     0.0, 0.0, 1.0,
-        -0.5, -0.5, 0,     1.0, 1.0, 0.0,
+        -1.0,  1.0, 0,     0.0, 1.0,
+         1.0,  1.0, 0,     1.0, 1.0,
+         1.0, -1.0, 0,     1.0, 0.0,
+        -1.0, -1.0, 0,     0.0, 0.0,
     ]
 
 	indices := [0, 1, 2, 0, 2, 3]u16
@@ -174,6 +657,7 @@ init :: fn() {
 	)
 	vertBuffer := sg.make_buffer(^vertBufferDesc)
 	indexBuffer := sg.make_buffer(^indexBufferDesc)
+	startupLog("buffers created")
 	state.bind.vertex_buffers[0] = vertBuffer
 	print("Vertex buffer state: ")
 	sg.query_buffer_state(vertBuffer).print()
@@ -198,16 +682,21 @@ init :: fn() {
 	)
 	shader.attrs[1] = (
 		base_type = .FLOAT,
-		glsl_name = c"color0"
+		glsl_name = c"uv0"
 	)
-	shader.uniform_blocks[0] = (
-		stage = .VERTEX,
-		size = mat4.size,
+	shader.views[0].texture = (
+		stage = .FRAGMENT,
+		sample_type = .UNFILTERABLE_FLOAT,
 	)
-	shader.uniform_blocks[0].glsl_uniforms[0] = (
-		type = .FLOAT4,
-		array_count = 4,
-		glsl_name = c"mvp"
+	shader.samplers[0] = (
+		stage = .FRAGMENT,
+		sampler_type = .NONFILTERING,
+	)
+	shader.texture_sampler_pairs[0] = (
+		stage = .FRAGMENT,
+		view_slot = 0,
+		sampler_slot = 0,
+		glsl_name = c"ocean_tex"
 	)
 
 	pipelineDesc := sg.pipeline_desc(
@@ -224,28 +713,40 @@ init :: fn() {
 	println("")
 
 	pipelineDesc.layout.attrs[0].format = .FLOAT3
-	pipelineDesc.layout.attrs[1].format = .FLOAT3
+	pipelineDesc.layout.attrs[1].format = .FLOAT2
 
+	startupLog("creating pipeline")
 	state.pip = sg.make_pipeline(^pipelineDesc)
 	if (state.pip.id == 0) {
 		print("Failed to make pipeline")
 	} else {
 		print("Made pipeline")
 	}
+	println("")
 
 	state.passAction.colors[0] = (
 		load_action = .CLEAR,
 		clear_value = (0, 0, 0, 1)
 	)
 
+	startupLog("creating ocean texture")
+	setupOceanTexture()
+	startupLog("starting cuda setup")
+	setupOceanCuda()
+	startupLog("starting time setup")
 	time.setup()
 	startTime = time.now()
+	startupLog("init complete")
 }
 
 prevTime := 0.
 deltaTime := 0.
 
 frame :: fn() {
+	if (!startupFrameLogged) {
+		startupLog("first frame begin")
+		startupFrameLogged = true
+	}
 	seconds : f32 = @numCast(time.sec(time.since(startTime)))
 	deltaTime = seconds - prevTime
 	movement := vec3(
@@ -254,11 +755,18 @@ frame :: fn() {
 		if (input.backward) 1 else if (input.forward) -1 else 0
 	)
 
-	# cuda
-	handle : cu.fftHandle = 0
-	result := cu.plan2d(^handle, 16, 16, .C2C)
-	# print("FFT result: ")
-	# println @name result
+	ocean.params.time = seconds
+	launchEvolveSpectrum()
+	logComplexSamples("heightSpectrum", ocean.heightSpectrum, ^oceanSpectrumDebugLogged)
+	runOceanInverseFfts()
+	logOceanDebugSamples()
+	mapOceanTexture()
+	launchWriteDisplacement()
+	unmapOceanTexture()
+	if (startupFrameLogged) {
+		startupLog("first frame cuda launches complete")
+		startupFrameLogged = false
+	}
 
 	# colors
 	red := sin 2. seconds
@@ -269,27 +777,6 @@ frame :: fn() {
 	sg.begin_pass(^pass)
     sg.apply_pipeline(state.pip)
     sg.apply_bindings(^state.bind)
-
-	# camera
-	w := app.widthf()
-	h := app.heightf()
-	aspect := w/h
-	rotation := quat.geographic(state.latitude, state.longitude)
-	rotMat := rotation.toMatrix()
-	translationAmount := RotateV3Q(movement, rotation.inverse())
-	# translationAmount.print()
-	translationAmount = MulV3F(translationAmount, deltaTime)
-
-	state.position = AddV3(state.position, translationAmount)
-
-	proj := Perspective(1. / 6., aspect, 0.01, 100)
-
-	camera := Translate(MulV3F(state.position, -1))
-
-	mvp := proj rotMat camera
-
-	uniformRange := sg.range(^mvp, @type(mvp).size)
-	sg.apply_uniforms(0, ^uniformRange)
 
     sg.draw(0, 6, 1)
     # sg.draw(0, 36, 1)
@@ -321,8 +808,6 @@ event :: fn(e: ^app.event) {
 
 # TODO: read automatic linkage names
 sokol_main :: fn "sokol_main"(argc: s32, argv: [^][^]u8) -> app.desc {
-	device: cu.Device
-	module := device.init()
 	return (
 		init_cb = init,
 		frame_cb = frame,

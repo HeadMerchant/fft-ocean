@@ -11,6 +11,55 @@
 @cDefine("SOKOL_LOG_IMPL")
 sg :: @cImport("sokol/sokol_gfx.h", "sg_")
 
+TextureTarget :: enum(u32) {
+	Texture2D = 0x0DE1
+}
+TextureInternalFormat :: enum(u32) {
+	Rgba32f = 0x8814
+}
+TextureFormat :: enum(u32) {
+	Rgba = 0x1908
+}
+TextureDataType :: enum(u32) {
+	Float = 0x1406
+}
+TextureParameter :: enum(u32) {
+	MinFilter = 0x2801
+	MagFilter = 0x2800
+	WrapS = 0x2802
+	WrapT = 0x2803
+}
+TextureFilter :: enum(u32) {
+	Nearest = 0x2600
+	Linear = 0x2601
+}
+TextureWrap :: enum(u32) {
+	ClampToEdge = 0x812F
+}
+
+genTextures :: fn "glGenTextures"(count: s32, textures: ^u32)
+bindTexture :: fn "glBindTexture"(target: TextureTarget, texture: u32)
+texParameteri :: fn "glTexParameteri"(target: TextureTarget, param: TextureParameter, value: s32)
+texImage2D :: fn "glTexImage2D"(
+	target: TextureTarget,
+	level: s32,
+	internalFormat: TextureInternalFormat,
+	width: s32,
+	height: s32,
+	border: s32,
+	format: TextureFormat,
+	type: TextureDataType,
+	data: ^void
+)
+texStorage2D :: fn "glTexStorage2D"(
+	target: TextureTarget,
+	levels: s32,
+	internalFormat: TextureInternalFormat,
+	width: s32,
+	height: s32
+)
+deleteTextures :: fn "glDeleteTextures"(count: s32, textures: ^u32)
+
 lookupBuffer :: fn "_sg_lookup_buffer"(id: u32) -> ^struct {
 	slot: struct {
 		id: u32
@@ -34,10 +83,6 @@ lookupBuffer :: fn "_sg_lookup_buffer"(id: u32) -> ^struct {
 	}
 }
 
-# BufferBindTarget :: enum(u32){
-# 	ArrayBuffer = 0x8892,
-# }
-# readBuffer :: fn "glGetBufferSubData"(target: BufferBindTarget, offset: usize, size: usize, data: ^void)
 readBuffer :: fn "glGetNamedBufferSubData"(buffer: u32, offset: usize, size: usize, data: ^void)
 readBack :: fn(buffer: sg.buffer, size: usize, data: ^void) {
 	glBuffer := lookupBuffer(buffer.id).gl.buf[0]

@@ -43,7 +43,14 @@ Error :: enum(s32) {
 	JitCompilerNotFound
 } impl {
 	log :: fn(self: Self) {
-		println @name self
+		if (self == .Success) {
+			println("Success")
+			return
+		}
+		print("CUDA error code: ")
+		print_s32(@bitCast(self, s32))
+		println("")
+		@crash()
 	}
 }
 
@@ -84,8 +91,17 @@ fftResult :: enum(s32) {
 	NvshmemFailure = 0x14
 }
 
-malloc :: fn "cudaMalloc"(ptr: ^^f32, size: usize) -> Error
+fftResult impl {
+	log :: fn(self: Self) {
+		println @name self
+	}
+}
+
+setDevice :: fn "cudaSetDevice"(device: s32) -> Error
 plan2d :: fn "cufftPlan2d"(plan: ^fftHandle, cols: s32, rows: s32, type: fftType) -> fftResult
+destroyPlan :: fn "cufftDestroy"(plan: fftHandle) -> fftResult
+execC2R :: fn "cufftExecC2R"(plan: fftHandle, input: ^void, output: ^void) -> fftResult
+execC2C :: fn "cufftExecC2C"(plan: fftHandle, input: ^void, output: ^void, direction: s32) -> fftResult
 
 memcpyKind :: enum(s32) {
 	HostToHost
@@ -95,7 +111,34 @@ memcpyKind :: enum(s32) {
 	Default
 }
 
-memcpy :: fn "cudaMemcpy"(dst: ^void, src: ^void, size: usize, kind: memcpyKind) -> Error
+DevicePointer :: u64
+memAlloc :: fn "cuMemAlloc_v2"(ptr: ^DevicePointer, size: usize) -> Error
+memcpyHtoD :: fn "cuMemcpyHtoD_v2"(dst: DevicePointer, src: ^void, size: usize) -> Error
+memcpyDtoH :: fn "cuMemcpyDtoH_v2"(dst: ^void, src: DevicePointer, size: usize) -> Error
+memsetD8 :: fn "cuMemsetD8_v2"(dst: DevicePointer, value: u8, count: usize) -> Error
+GraphicsResource :: ^opaque
+Array :: ^opaque
+SurfaceObject :: u64
+resourceType :: enum(s32) {
+	Array = 0
+	MipmappedArray = 1
+	Linear = 2
+	Pitch2D = 3
+}
+graphicsRegisterFlags :: enum(u32) {
+	None = 0
+	ReadOnly = 1
+	WriteDiscard = 2
+	SurfaceLoadStore = 4
+}
+ResourceDesc :: struct {
+	resType: resourceType
+	_padding0: u32
+	array: Array
+	_reserved: [15]u64
+	flags: u32
+	_padding1: u32
+}
 Device :: s32
 Context :: struct {ptr: ^opaque}
 Module :: struct {ptr: ^opaque}
@@ -103,16 +146,7 @@ Kernel :: struct {ptr: ^opaque}
 
 init :: fn "cuInit"(flags: u32) -> Error
 deviceGet :: fn "cuDeviceGet"(device: ^Device, ordinal: u32) -> Error
-ctxCreate :: fn "cuCtxCreate"(
-	ctx: ^Context,
-	params: struct {
-		affinityParam: ^opaque
-		numExecAffinityParams: s32
-		cigParams: ^opaque
-	},
-	flags: u32,
-	device: Device
-) -> Error
+ctxGetCurrent :: fn "cuCtxGetCurrent"(ctx: ^Context) -> Error
 
 loadModule :: fn "cuModuleLoadData"(module: ^Module, image: ^void) -> Error
 getFunction :: fn "cuModuleGetFunction"(
@@ -124,7 +158,7 @@ getFunction :: fn "cuModuleGetFunction"(
 Module impl {
 	loadKernel :: fn(self: Self, name: ^u8) -> Kernel {
 		resultKernel: Kernel
-		getFunction(^resultKernel, self, name)
+		getFunction(^resultKernel, self, name).log()
 		return resultKernel
 	}
 }
@@ -165,15 +199,55 @@ launchKernel :: fn "cuLaunchKernel"(
     extra: ^^void,
 ) -> Error
 
-sync :: fn "cuCtxSynchronize"()
+sync :: fn "cuCtxSynchronize"() -> Error
+graphicsGLRegisterImage :: fn "cudaGraphicsGLRegisterImage"(
+	resource: ^GraphicsResource,
+	image: u32,
+	target: u32,
+	flags: u32
+) -> Error
+graphicsMapResources :: fn "cudaGraphicsMapResources"(
+	count: s32,
+	resources: ^GraphicsResource,
+	stream: Stream
+) -> Error
+graphicsUnmapResources :: fn "cudaGraphicsUnmapResources"(
+	count: s32,
+	resources: ^GraphicsResource,
+	stream: Stream
+) -> Error
+graphicsSubResourceGetMappedArray :: fn "cudaGraphicsSubResourceGetMappedArray"(
+	array: ^Array,
+	resource: GraphicsResource,
+	arrayIndex: u32,
+	mipLevel: u32
+) -> Error
+graphicsUnregisterResource :: fn "cudaGraphicsUnregisterResource"(resource: GraphicsResource) -> Error
+createSurfaceObject :: fn "cudaCreateSurfaceObject"(
+	surfaceObject: ^SurfaceObject,
+	resourceDesc: ^ResourceDesc
+) -> Error
+destroySurfaceObject :: fn "cudaDestroySurfaceObject"(surfaceObject: SurfaceObject) -> Error
 Kernel impl {
 	launch :: fn (self: Self, args: [^]^void, grid: Grid, block: Block, sharedMem: u32) {
-		launchKernel(self, grid.x, grid.y, grid.z, block.x, block.y, block.z, sharedMem, null, args, null)
+		launchKernel(
+			self,
+			grid.x,
+			grid.y,
+			grid.z,
+			block.x,
+			block.y,
+			block.z,
+			sharedMem,
+			null,
+			args,
+			null
+		).log()
 	}
 
 	launchAndSync :: fn(self: Self, args: [^]^void, grid: Grid, block: Block, sharedMem: u32) {
 		self.launch(args, grid, block, sharedMem)
-		sync()
+		sync().log()
 	}
 }
 
@@ -182,15 +256,16 @@ Device impl {
 		using fmt
 		println("Initializing CUDA")
 		init(0).log()
+		println("Initializing CUDA runtime primary context")
+		setDevice(0).log()
 		println("Getting CUDA device")
 		deviceGet(self, 0).log()
 		context : Context
-		println("Creating CUDA context")
-		ctxCreate(^context, (), 0, self^).log()
+		println("Getting CUDA current context")
+		ctxGetCurrent(^context).log()
 		module : Module
 		println("Loading CUDA module")
 		loadModule(^module, moduleName).log()
 		return module
 	}
 }
-

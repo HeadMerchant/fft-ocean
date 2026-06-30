@@ -1,0 +1,314 @@
+pi :: 3.14159265
+gravity :: 9.81
+epsilon :: 0.00001
+
+float2 :: struct {
+	x: f32
+	y: f32
+}
+
+float4 :: struct {
+	x: f32
+	y: f32
+	z: f32
+	w: f32
+}
+
+surfaceStore4 :: fn "llvm.nvvm.sust.b.2d.v4i32.trap"(
+	surface: u64,
+	x: s32,
+	y: s32,
+	a: u32,
+	b: u32,
+	c: u32,
+	d: u32
+)
+
+complex :: struct {
+	re: f32
+	im: f32
+} impl {
+	add :: fn(a: Self, b: Self) -> Self {
+		return (a.re + b.re, a.im + b.im)
+	}
+
+	multiply :: fn(a: Self, b: Self) -> Self {
+		return (
+			a.re * b.re - a.im * b.im,
+			a.re * b.im + a.im * b.re
+		)
+	}
+
+	scale :: fn(a: Self, factor: f32) -> Self {
+		return (a.re * factor, a.im * factor)
+	}
+
+	conjugate :: fn(a: Self) -> Self {
+		return (a.re, -a.im)
+	}
+}
+
+OceanSpectrumParams :: struct {
+	resolution: u32
+	patchLength: f32
+	time: f32
+	amplitude: f32
+	windSpeed: f32
+	windDirection: float2
+	depth: f32
+	shortWaveDamp: f32
+	choppiness: f32
+	heightScale: f32
+}
+
+sqrt :: fn "llvm.sqrt.f32"(x: f32) -> f32
+exp :: fn "llvm.exp.f32"(x: f32) -> f32
+log :: fn "__nv_logf"(x: f32) -> f32
+sin :: fn "__nv_sinf"(x: f32) -> f32
+cos :: fn "__nv_cosf"(x: f32) -> f32
+tanh :: fn "llvm.tanh.f32"(x: f32) -> f32
+min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
+max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
+
+dot2 :: fn(a: float2, b: float2) -> f32 {
+	return a.x * b.x + a.y * b.y
+}
+
+length2 :: fn(v: float2) -> f32 {
+	return sqrt(dot2(v, v))
+}
+
+normalize2 :: fn(v: float2) -> float2 {
+	len := length2(v)
+	if (len < epsilon) {
+		return (0, 0)
+	}
+	invLen := 1.0 / len
+	return (v.x * invLen, v.y * invLen)
+}
+
+complexExp :: fn(angle: f32) -> complex {
+	x2 := angle * angle
+	sinApprox := angle * (1.0 - x2 / 6.0)
+	cosApprox := 1.0 - x2 * 0.5 + (x2 * x2) / 24.0
+	return (cosApprox, sinApprox)
+}
+
+tanhApprox :: fn(x: f32) -> f32 {
+	if (x > 3.0) {
+		return 1.0
+	}
+	return x / (1.0 + x)
+}
+
+iTimes :: fn(value: complex) -> complex {
+	return (-value.im, value.re)
+}
+
+linearIndex :: fn(resolution: u32, x: u32, y: u32) -> u32 {
+	return y * resolution + x
+}
+
+hashU32 :: fn(value: u32) -> u32 {
+	x := value * 747796405 + 2891336453
+	x = x * 277803737 + 12345
+	x = x * 747796405 + 2891336453
+	return x
+}
+
+randomUnit :: fn(seed: u32) -> f32 {
+	bits := hashU32(seed) & 16777215
+	return (@numCast(bits, f32) + 1.0) / 16777217.0
+}
+
+gaussianPair :: fn(seed: u32) -> float2 {
+	u0 := randomUnit(seed)
+	u1 := randomUnit(seed + 1)
+	radius := sqrt(-2.0 * log(u0))
+	angle := 2.0 * pi * u1
+	return (
+		radius * cos(angle),
+		radius * sin(angle)
+	)
+}
+
+centeredWaveVector :: fn(params: OceanSpectrumParams, x: u32, y: u32) -> float2 {
+	halfN := @numCast(params.resolution, f32) * 0.5
+	deltaK := 2.0 * pi / params.patchLength
+	return (
+		(@numCast(x, f32) - halfN) * deltaK,
+		(@numCast(y, f32) - halfN) * deltaK
+	)
+}
+
+phillipsSpectrum :: fn(params: OceanSpectrumParams, k: float2) -> f32 {
+	kLength := length2(k)
+	if (kLength < epsilon) {
+		return 0.0
+	}
+
+	kLength2 := kLength * kLength
+	kLength4 := kLength2 * kLength2
+	windDir := normalize2(params.windDirection)
+	kDotW := dot2(normalize2(k), windDir)
+	L := params.windSpeed * params.windSpeed / gravity
+	L2 := L * L
+	damping2 := params.shortWaveDamp * params.shortWaveDamp
+	smallWaveFade := 1.0 / (1.0 + kLength2 * damping2)
+	largeWaveFade := (kLength2 * L2) / (1.0 + kLength2 * L2)
+	directional := kDotW * kDotW
+	return params.amplitude * directional * largeWaveFade * smallWaveFade / kLength4
+}
+
+mirrorCoordinate :: fn(resolution: u32, coord: u32) -> u32 {
+	if (coord == 0) {
+		return 0
+	}
+	return resolution - coord
+}
+
+wrapCoordinate :: fn(resolution: u32, coord: u32, delta: s32) -> u32 {
+	if (delta < 0) {
+		if (coord == 0) {
+			return resolution - 1
+		}
+		return coord - 1
+	}
+	if (coord + 1 >= resolution) {
+		return 0
+	}
+	return coord + 1
+}
+
+initializeSpectrum :: kernel(
+	params: OceanSpectrumParams,
+	gaussian0: [^]float2,
+	gaussian1: [^]float2,
+	h0: [^]complex,
+	omega: [^]f32
+) {
+	x := @blockIdxX * @blockDimX + @threadIdxX
+	y := @blockIdxY * @blockDimY + @threadIdxY
+	if (x >= params.resolution or y >= params.resolution) {
+		return
+	}
+
+	idx := linearIndex(params.resolution, x, y)
+	k := centeredWaveVector(params, x, y)
+	spectrum := phillipsSpectrum(params, k)
+	scale := sqrt(max(0.0, spectrum * 0.5))
+	seedBase := idx * 4 + 1
+	gaussA := gaussianPair(seedBase)
+	gaussB := gaussianPair(seedBase + 2)
+
+	gaussian0[idx] = gaussA
+	gaussian1[idx] = gaussB
+
+	h0[idx] = (gaussA.x * scale, gaussA.y * scale)
+	omega[idx] = sqrt(gravity * length2(k) * tanhApprox(length2(k) * params.depth))
+}
+
+evolveSpectrum :: kernel(
+	params: OceanSpectrumParams,
+	h0: [^]complex,
+	omega: [^]f32,
+	heightSpectrum: [^]complex,
+	displacementXSpectrum: [^]complex,
+	displacementZSpectrum: [^]complex
+) {
+	x := @blockIdxX * @blockDimX + @threadIdxX
+	y := @blockIdxY * @blockDimY + @threadIdxY
+	if (x >= params.resolution or y >= params.resolution) {
+		return
+	}
+
+	idx := linearIndex(params.resolution, x, y)
+	mirrorX := mirrorCoordinate(params.resolution, x)
+	mirrorY := mirrorCoordinate(params.resolution, y)
+	mirrorIdx := linearIndex(params.resolution, mirrorX, mirrorY)
+	k := centeredWaveVector(params, x, y)
+	kDir := normalize2(k)
+
+	phase := omega[idx] * params.time
+	forwardPhase := complexExp(phase)
+	backwardPhase := complexExp(-phase)
+	h0k := h0[idx]
+	h0MinusK := h0[mirrorIdx].conjugate()
+	height := h0k.multiply(forwardPhase).add(h0MinusK.multiply(backwardPhase))
+
+	choppy := params.choppiness
+	displacementX := iTimes(height).scale(-kDir.x * choppy)
+	displacementZ := iTimes(height).scale(-kDir.y * choppy)
+
+	heightSpectrum[idx] = height
+	displacementXSpectrum[idx] = displacementX
+	displacementZSpectrum[idx] = displacementZ
+}
+
+writeDisplacementToTexture :: kernel(
+	params: OceanSpectrumParams,
+	heightField: [^]f32,
+	displacementXField: [^]f32,
+	displacementZField: [^]f32,
+	slopeXField: [^]f32,
+	slopeZField: [^]f32,
+	outSurface: u64
+) {
+	x := @blockIdxX * @blockDimX + @threadIdxX
+	y := @blockIdxY * @blockDimY + @threadIdxY
+	if (x >= params.resolution or y >= params.resolution) {
+		return
+	}
+
+	idx := linearIndex(params.resolution, x, y)
+	signFlip : f32 = if (((x + y) % 2) == 0) 1.0 else -1.0
+	height := heightField[idx] * signFlip * params.heightScale
+	displaceX := displacementXField[idx] * signFlip
+	displaceZ := displacementZField[idx] * signFlip
+	foam := min(1.0, max(0.0, 0.5 + 0.02 * height))
+	xBytes := @numCast(x * 16, s32)
+	surfaceStore4(
+		outSurface,
+		xBytes,
+		@numCast(y, s32),
+		@bitCast(displaceX, u32),
+		@bitCast(height, u32),
+		@bitCast(displaceZ, u32),
+		@bitCast(foam, u32)
+	)
+}
+
+extractSpatialFields :: kernel(
+	params: OceanSpectrumParams,
+	heightSpatial: [^]complex,
+	displacementXSpatial: [^]complex,
+	displacementZSpatial: [^]complex,
+	heightField: [^]f32,
+	displacementXField: [^]f32,
+	displacementZField: [^]f32,
+	slopeXField: [^]f32,
+	slopeZField: [^]f32
+) {
+	x := @blockIdxX * @blockDimX + @threadIdxX
+	y := @blockIdxY * @blockDimY + @threadIdxY
+	if (x >= params.resolution or y >= params.resolution) {
+		return
+	}
+
+	idx := linearIndex(params.resolution, x, y)
+	invCount := 1.0 / (@numCast(params.resolution * params.resolution, f32))
+	heightField[idx] = heightSpatial[idx].re * invCount
+	displacementXField[idx] = displacementXSpatial[idx].re * invCount
+	displacementZField[idx] = displacementZSpatial[idx].re * invCount
+
+	leftX := wrapCoordinate(params.resolution, x, -1)
+	rightX := wrapCoordinate(params.resolution, x, 1)
+	upY := wrapCoordinate(params.resolution, y, -1)
+	downY := wrapCoordinate(params.resolution, y, 1)
+	leftHeight := heightField[linearIndex(params.resolution, leftX, y)]
+	rightHeight := heightField[linearIndex(params.resolution, rightX, y)]
+	upHeight := heightField[linearIndex(params.resolution, x, upY)]
+	downHeight := heightField[linearIndex(params.resolution, x, downY)]
+	slopeXField[idx] = 0.5 * (rightHeight - leftHeight)
+	slopeZField[idx] = 0.5 * (downHeight - upHeight)
+}
