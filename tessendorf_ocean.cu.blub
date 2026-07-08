@@ -5,6 +5,27 @@ epsilon :: 0.00001
 float2 :: struct {
 	x: f32
 	y: f32
+} impl {
+	dot :: fn(a: Self, b: Self) -> f32 {
+		return a.x * b.x + a.y * b.y
+	}
+
+	length :: fn(v: Self) -> f32 {
+		return sqrt(v.dot(v))
+	}
+
+	normalize :: fn(v: Self) -> Self {
+		len := v.length()
+		if (len < epsilon) {
+			return (0, 0)
+		}
+		invLen := 1.0 / len
+		return (v.x * invLen, v.y * invLen)
+	}
+
+	fromAngle :: fn(a: f32) -> Self {
+		return (cos(a), sin(a))
+	}
 }
 
 float4 :: struct {
@@ -14,15 +35,57 @@ float4 :: struct {
 	w: f32
 }
 
+# https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html
+		# writes to textures need to be written to byte offset of X coordinate
 surfaceStore4 :: fn "llvm.nvvm.sust.b.2d.v4i32.trap"(
 	surface: u64,
-	x: s32,
-	y: s32,
+	x: u32,
+	y: u32,
 	a: u32,
 	b: u32,
 	c: u32,
 	d: u32
 )
+
+PixelCoord :: struct {
+	x: u32
+	y: u32
+}
+
+Surface :: u64
+Surface impl {
+	surfaceStore4 :: fn "llvm.nvvm.sust.p.2d.v4i32.trap"(
+		surface: Self,
+		x: u32,
+		y: u32,
+		a: u32,
+		b: u32,
+		c: u32,
+		d: u32,
+	)
+
+	# NVPTX lowers this intrinsic by scaling X for the element width; pass texel coordinates here.
+	write :: fn(self: Self, coord: PixelCoord, val: float4) {
+		a := @bitCast(val.x, u32)
+		b := @bitCast(val.y, u32)
+		c := @bitCast(val.z, u32)
+		d := @bitCast(val.w, u32)
+		self.surfaceStore4(
+			coord.x, coord.y,
+			a, b, c, d,
+		)
+	}
+
+	writeRgba8 :: fn(self: Self, coord: PixelCoord, val: [4]u8) {
+		self.surfaceStore4(
+			coord.x, coord.y,
+			@numCast(val[0]),
+			@numCast(val[1]),
+			@numCast(val[2]),
+			@numCast(val[3]),
+		)
+	}
+}
 
 complex :: struct {
 	re: f32
@@ -46,6 +109,14 @@ complex :: struct {
 	conjugate :: fn(a: Self) -> Self {
 		return (a.re, -a.im)
 	}
+
+	exp :: fn(angle: f32) -> Self {
+		return (cos(angle), sin(angle))
+	}
+
+	timesI :: fn(value: Self) -> Self {
+		return (-value.im, value.re)
+	}
 }
 
 OceanSpectrumParams :: struct {
@@ -62,48 +133,13 @@ OceanSpectrumParams :: struct {
 }
 
 sqrt :: fn "llvm.sqrt.f32"(x: f32) -> f32
-exp :: fn "llvm.exp.f32"(x: f32) -> f32
+exp :: fn "__nv_expf"(x: f32) -> f32
 log :: fn "__nv_logf"(x: f32) -> f32
 sin :: fn "__nv_sinf"(x: f32) -> f32
 cos :: fn "__nv_cosf"(x: f32) -> f32
-tanh :: fn "llvm.tanh.f32"(x: f32) -> f32
+tanh :: fn "__nv_tanhf"(x: f32) -> f32
 min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
 max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
-
-dot2 :: fn(a: float2, b: float2) -> f32 {
-	return a.x * b.x + a.y * b.y
-}
-
-length2 :: fn(v: float2) -> f32 {
-	return sqrt(dot2(v, v))
-}
-
-normalize2 :: fn(v: float2) -> float2 {
-	len := length2(v)
-	if (len < epsilon) {
-		return (0, 0)
-	}
-	invLen := 1.0 / len
-	return (v.x * invLen, v.y * invLen)
-}
-
-complexExp :: fn(angle: f32) -> complex {
-	x2 := angle * angle
-	sinApprox := angle * (1.0 - x2 / 6.0)
-	cosApprox := 1.0 - x2 * 0.5 + (x2 * x2) / 24.0
-	return (cosApprox, sinApprox)
-}
-
-tanhApprox :: fn(x: f32) -> f32 {
-	if (x > 3.0) {
-		return 1.0
-	}
-	return x / (1.0 + x)
-}
-
-iTimes :: fn(value: complex) -> complex {
-	return (-value.im, value.re)
-}
 
 linearIndex :: fn(resolution: u32, x: u32, y: u32) -> u32 {
 	return y * resolution + x
@@ -142,22 +178,51 @@ centeredWaveVector :: fn(params: OceanSpectrumParams, x: u32, y: u32) -> float2 
 }
 
 phillipsSpectrum :: fn(params: OceanSpectrumParams, k: float2) -> f32 {
-	kLength := length2(k)
-	if (kLength < epsilon) {
-		return 0.0
-	}
+	kLength := k.length()
+    if (kLength < 0.001) return 0
 
-	kLength2 := kLength * kLength
-	kLength4 := kLength2 * kLength2
-	windDir := normalize2(params.windDirection)
-	kDotW := dot2(normalize2(k), windDir)
-	L := params.windSpeed * params.windSpeed / gravity
-	L2 := L * L
-	damping2 := params.shortWaveDamp * params.shortWaveDamp
-	smallWaveFade := 1.0 / (1.0 + kLength2 * damping2)
-	largeWaveFade := (kLength2 * L2) / (1.0 + kLength2 * L2)
-	directional := kDotW * kDotW
-	return params.amplitude * directional * largeWaveFade * smallWaveFade / kLength4
+    L := (params.windSpeed * params.windSpeed) / gravity
+    L2 := L * L
+
+    # directional alignment (k̂ · ŵ)^2
+    windAlignment := k.dot(params.windDirection) / kLength
+
+    if (windAlignment < 0) windAlignment *= 0.07
+    windAlignment *= windAlignment
+
+    # small-wave suppression scale
+    l2 := L / params.shortWaveDamp
+	l2 *= l2
+
+	k2 := k.dot(k)
+	k4 := k2 * k2
+	
+	return max(
+		params.amplitude *
+        exp(-1 / (k2 * L2)) /
+        k4 *
+        windAlignment *
+        exp(-k2 * l2),
+		0
+	)
+    # return max(Ph, 0)
+
+	# kLength := length2(k)
+	# if (kLength < epsilon) {
+	# 	return 0.0
+	# }
+
+	# kLength2 := kLength * kLength
+	# kLength4 := kLength2 * kLength2
+	# windDir := normalize2(params.windDirection)
+	# kDotW := dot2(normalize2(k), windDir)
+	# L := params.windSpeed * params.windSpeed / gravity
+	# L2 := L * L
+	# damping2 := params.shortWaveDamp * params.shortWaveDamp
+	# smallWaveFade := 1.0 / (1.0 + kLength2 * damping2)
+	# largeWaveFade := (kLength2 * L2) / (1.0 + kLength2 * L2)
+	# directional := kDotW * kDotW
+	# return params.amplitude * directional * largeWaveFade * smallWaveFade / kLength4
 }
 
 mirrorCoordinate :: fn(resolution: u32, coord: u32) -> u32 {
@@ -205,7 +270,9 @@ initializeSpectrum :: kernel(
 	gaussian1[idx] = gaussB
 
 	h0[idx] = (gaussA.x * scale, gaussA.y * scale)
-	omega[idx] = sqrt(gravity * length2(k) * tanhApprox(length2(k) * params.depth))
+
+	kLength := k.length()
+	omega[idx] = sqrt(gravity * kLength * tanh(kLength * params.depth))
 }
 
 evolveSpectrum :: kernel(
@@ -227,18 +294,20 @@ evolveSpectrum :: kernel(
 	mirrorY := mirrorCoordinate(params.resolution, y)
 	mirrorIdx := linearIndex(params.resolution, mirrorX, mirrorY)
 	k := centeredWaveVector(params, x, y)
-	kDir := normalize2(k)
+	kDir := k.normalize()
 
 	phase := omega[idx] * params.time
-	forwardPhase := complexExp(phase)
-	backwardPhase := complexExp(-phase)
+	forwardPhase :=  complex.exp(phase)
+	backwardPhase := complex.exp(-phase)
 	h0k := h0[idx]
 	h0MinusK := h0[mirrorIdx].conjugate()
 	height := h0k.multiply(forwardPhase).add(h0MinusK.multiply(backwardPhase))
 
 	choppy := params.choppiness
-	displacementX := iTimes(height).scale(-kDir.x * choppy)
-	displacementZ := iTimes(height).scale(-kDir.y * choppy)
+
+	heightRot := height.timesI()
+	displacementX := heightRot.scale(-kDir.x * choppy)
+	displacementZ := heightRot.scale(-kDir.y * choppy)
 
 	heightSpectrum[idx] = height
 	displacementXSpectrum[idx] = displacementX
@@ -252,7 +321,7 @@ writeDisplacementToTexture :: kernel(
 	displacementZField: [^]f32,
 	slopeXField: [^]f32,
 	slopeZField: [^]f32,
-	outSurface: u64
+	outSurface: Surface
 ) {
 	x := @blockIdxX * @blockDimX + @threadIdxX
 	y := @blockIdxY * @blockDimY + @threadIdxY
@@ -266,16 +335,19 @@ writeDisplacementToTexture :: kernel(
 	displaceX := displacementXField[idx] * signFlip
 	displaceZ := displacementZField[idx] * signFlip
 	foam := min(1.0, max(0.0, 0.5 + 0.02 * height))
-	xBytes := @numCast(x * 16, s32)
-	surfaceStore4(
-		outSurface,
-		xBytes,
-		@numCast(y, s32),
-		@bitCast(displaceX, u32),
-		@bitCast(height, u32),
-		@bitCast(displaceZ, u32),
-		@bitCast(foam, u32)
-	)
+	outSurface.write((x, y), (displaceX, height, displaceZ, foam))
+	# r : u8 = @numCast((x + y) % 2 * 255)
+	# g : u8 = @numCast((x + 1 + y) % 2 * 255)
+	# outSurface.writeRgba8((x, y), [r, g, 255, 255])
+	# surfaceStore4(
+	# 	outSurface,
+	# 	xBytes,
+	# 	@numCast(y, s32),
+	# 	0,
+	# 	0,
+	# 	0,
+	# 	@bitCast(one, u32)
+	# )
 }
 
 extractSpatialFields :: kernel(

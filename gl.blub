@@ -15,6 +15,7 @@ TextureTarget :: enum(u32) {
 	Texture2D = 0x0DE1
 }
 TextureInternalFormat :: enum(u32) {
+	Rgba8 = 0x8058
 	Rgba32f = 0x8814
 }
 TextureFormat :: enum(u32) {
@@ -37,28 +38,60 @@ TextureWrap :: enum(u32) {
 	ClampToEdge = 0x812F
 }
 
-genTextures :: fn "glGenTextures"(count: s32, textures: ^u32)
-bindTexture :: fn "glBindTexture"(target: TextureTarget, texture: u32)
-texParameteri :: fn "glTexParameteri"(target: TextureTarget, param: TextureParameter, value: s32)
-texImage2D :: fn "glTexImage2D"(
-	target: TextureTarget,
-	level: s32,
-	internalFormat: TextureInternalFormat,
-	width: s32,
-	height: s32,
-	border: s32,
-	format: TextureFormat,
-	type: TextureDataType,
-	data: ^void
-)
-texStorage2D :: fn "glTexStorage2D"(
-	target: TextureTarget,
-	levels: s32,
-	internalFormat: TextureInternalFormat,
-	width: s32,
-	height: s32
-)
-deleteTextures :: fn "glDeleteTextures"(count: s32, textures: ^u32)
+Texture2d :: struct {
+	id: u32
+} impl {
+	texture2dTarget    :: 0x0DE1
+	textureNearest     :: 0x2600
+	textureClampToEdge :: 0x812F
+
+	create :: fn(
+		levels: s32,
+		internalFormat: TextureInternalFormat,
+		width: s32,
+		height: s32
+	) -> Self {
+		self: Self
+		(fn "glGenTextures"(count: s32, textures: ^Self))(1, ^self)
+		self.bind()
+		set :: fn "glTexParameteri"(target: TextureTarget, param: TextureParameter, value: s32)
+		set(.Texture2D, .MinFilter, Self.textureNearest)
+		set(.Texture2D, .MagFilter, Self.textureNearest)
+		set(.Texture2D, .WrapS, Self.textureClampToEdge)
+		set(.Texture2D, .WrapT, Self.textureClampToEdge)
+		(fn "glTexStorage2D"(
+			target: TextureTarget,
+			levels: s32,
+			internalFormat: TextureInternalFormat,
+			width: s32,
+			height: s32
+		))(.Texture2D, levels, internalFormat, width, height)
+		Self(0).bind()
+		return self
+	}
+
+	bind :: fn(self: Self) {
+		(fn "glBindTexture"(target: TextureTarget, texture: Self))(.Texture2D, self)
+	}
+
+
+	
+}
+
+
+# texImage2D :: fn "glTexImage2D"(
+# 	target: TextureTarget,
+# 	level: s32,
+# 	internalFormat: TextureInternalFormat,
+# 	width: s32,
+# 	height: s32,
+# 	border: s32,
+# 	format: TextureFormat,
+# 	type: TextureDataType,
+# 	data: ^void
+# )
+
+# deleteTextures :: fn "glDeleteTextures"(count: s32, textures: ^u32)
 
 lookupBuffer :: fn "_sg_lookup_buffer"(id: u32) -> ^struct {
 	slot: struct {
