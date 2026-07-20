@@ -1,0 +1,107 @@
+epsilon :: 0.00001
+vec2 :: struct {
+	x: f32
+	y: f32
+} impl {
+	dot :: fn(a: Self, b: Self) -> f32 {
+		return a.x * b.x + a.y * b.y
+	}
+
+	length :: fn(v: Self) -> f32 {
+		return sqrt(v.dot(v))
+	}
+
+	normalize :: fn(v: Self) -> Self {
+		len := v.length()
+		if (len < epsilon) {
+			return (0, 0)
+		}
+		invLen := 1 / len
+		return (v.x * invLen, v.y * invLen)
+	}
+
+	fromAngle :: fn(a: f32) -> Self {
+		return (cos(a), sin(a))
+	}
+}
+
+vec4 :: struct {
+	x: f32
+	y: f32
+	z: f32
+	w: f32
+}
+
+pi  :: 3.14159265
+tau :: 6.28318530718
+
+complex :: struct {
+	re: f32
+	im: f32
+} impl {
+	add :: fn(a: Self, b: Self) -> Self {
+		return (a.re + b.re, a.im + b.im)
+	}
+
+	multiply :: fn(a: Self, b: Self) -> Self {
+		return (
+			a.re * b.re - a.im * b.im,
+			a.re * b.im + a.im * b.re
+		)
+	}
+
+	scale :: fn(a: Self, factor: f32) -> Self {
+		return (a.re * factor, a.im * factor)
+	}
+
+	conjugate :: fn(a: Self) -> Self {
+		return (a.re, -a.im)
+	}
+
+	exp :: fn(angle: f32) -> Self {
+		return (cos(angle), sin(angle))
+	}
+
+	timesI :: fn(value: Self) -> Self {
+		return (-value.im, value.re)
+	}
+}
+
+sqrt :: fn "llvm.sqrt.f32"(x: f32) -> f32
+exp :: fn "__nv_expf"(x: f32) -> f32
+pow :: fn "__nv_powf"(x: f32, y: f32) -> f32
+abs :: fn "__nv_fabsf"(x: f32) -> f32
+cosh :: fn "__nv_coshf"(x: f32) -> f32
+log :: fn "__nv_logf"(x: f32) -> f32
+sin :: fn "__nv_sinf"(x: f32) -> f32
+cos :: fn "__nv_cosf"(x: f32) -> f32
+tanh :: fn "__nv_tanhf"(x: f32) -> f32
+min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
+max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
+
+hashU32 :: fn(value: u32) -> u32 {
+	x := value * 747796405 + 2891336453
+	x = x * 277803737 + 12345
+	x = x * 747796405 + 2891336453
+	return x
+}
+
+randomUnit :: fn(seed: u32) -> f32 {
+	bits := hashU32(seed) & 16777215
+	return (@numCast(bits, f32) + 1) / 16777217
+}
+
+gaussianPair :: fn(seed: u32) -> vec2 {
+	u0 := randomUnit(seed)
+	u1 := randomUnit(seed + 1)
+	radius := sqrt(-2 log(u0))
+	angle := tau u1
+	return (
+		radius cos(angle),
+		radius sin(angle),
+	)
+}
+
+lerp :: fn(a: f32, b: f32, t: f32) -> f32 {
+	return (1 - t) a + b t
+}

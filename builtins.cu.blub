@@ -1,0 +1,73 @@
+using import "math.cu.blub"
+
+PixelCoord :: struct {
+	x: u32
+	y: u32
+}
+
+# https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html
+# writes to textures need to be written to byte offset of X coordinate
+surfaceStore4 :: fn "llvm.nvvm.sust.b.2d.v4i32.trap"(
+	surface: u64,
+	x: u32,
+	y: u32,
+	a: u32,
+	b: u32,
+	c: u32,
+	d: u32,
+)
+
+
+
+Surface :: u64
+Surface impl {
+	# NVPTX lowers these intrinsics by scaling X for the element width; just pass texel coordinates here
+	surfaceStore4 :: fn "llvm.nvvm.sust.p.2d.v4i32.trap"(
+		surface: Self,
+		x: u32,
+		y: u32,
+		a: u32,
+		b: u32,
+		c: u32,
+		d: u32,
+	)
+
+	surfaceStore2 :: fn "llvm.nvvm.sust.p.2d.v2i32.trap"(
+		surface: Self,
+		x: u32,
+		y: u32,
+		a: u32,
+		b: u32,
+	)
+
+	write :: fn(self: Self, coord: PixelCoord, val: vec4) {
+		a := @bitCast(val.x, u32)
+		b := @bitCast(val.y, u32)
+		c := @bitCast(val.z, u32)
+		d := @bitCast(val.w, u32)
+		self.surfaceStore4(
+			coord.x, coord.y,
+			a, b, c, d,
+		)
+	}
+
+	writeRgba8 :: fn(self: Self, coord: PixelCoord, val: [4]u8) {
+		self.surfaceStore4(
+			coord.x, coord.y,
+			@numCast(val[0]),
+			@numCast(val[1]),
+			@numCast(val[2]),
+			@numCast(val[3]),
+		)
+	}
+
+	writeVec2 :: fn(self: Self, coord: PixelCoord, val: vec2) {
+		self.surfaceStore2(
+			coord.x,
+			coord.y,
+			@bitCast(val.x),
+			@bitCast(val.y),
+		)
+	}
+}
+

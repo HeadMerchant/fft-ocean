@@ -1,386 +1,138 @@
-pi :: 3.14159265
+using import "math.cu.blub"
+using import "builtins.cu.blub"
 gravity :: 9.81
-epsilon :: 0.00001
+G :: gravity
 
-float2 :: struct {
-	x: f32
-	y: f32
-} impl {
-	dot :: fn(a: Self, b: Self) -> f32 {
-		return a.x * b.x + a.y * b.y
-	}
-
-	length :: fn(v: Self) -> f32 {
-		return sqrt(v.dot(v))
-	}
-
-	normalize :: fn(v: Self) -> Self {
-		len := v.length()
-		if (len < epsilon) {
-			return (0, 0)
-		}
-		invLen := 1.0 / len
-		return (v.x * invLen, v.y * invLen)
-	}
-
-	fromAngle :: fn(a: f32) -> Self {
-		return (cos(a), sin(a))
-	}
-}
-
-float4 :: struct {
-	x: f32
-	y: f32
-	z: f32
-	w: f32
-}
-
-# https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html
-		# writes to textures need to be written to byte offset of X coordinate
-surfaceStore4 :: fn "llvm.nvvm.sust.b.2d.v4i32.trap"(
-	surface: u64,
-	x: u32,
-	y: u32,
-	a: u32,
-	b: u32,
-	c: u32,
-	d: u32
-)
-
-PixelCoord :: struct {
-	x: u32
-	y: u32
-}
-
-Surface :: u64
-Surface impl {
-	surfaceStore4 :: fn "llvm.nvvm.sust.p.2d.v4i32.trap"(
-		surface: Self,
-		x: u32,
-		y: u32,
-		a: u32,
-		b: u32,
-		c: u32,
-		d: u32,
-	)
-
-	# NVPTX lowers this intrinsic by scaling X for the element width; pass texel coordinates here.
-	write :: fn(self: Self, coord: PixelCoord, val: float4) {
-		a := @bitCast(val.x, u32)
-		b := @bitCast(val.y, u32)
-		c := @bitCast(val.z, u32)
-		d := @bitCast(val.w, u32)
-		self.surfaceStore4(
-			coord.x, coord.y,
-			a, b, c, d,
-		)
-	}
-
-	writeRgba8 :: fn(self: Self, coord: PixelCoord, val: [4]u8) {
-		self.surfaceStore4(
-			coord.x, coord.y,
-			@numCast(val[0]),
-			@numCast(val[1]),
-			@numCast(val[2]),
-			@numCast(val[3]),
-		)
-	}
-}
-
-complex :: struct {
-	re: f32
-	im: f32
-} impl {
-	add :: fn(a: Self, b: Self) -> Self {
-		return (a.re + b.re, a.im + b.im)
-	}
-
-	multiply :: fn(a: Self, b: Self) -> Self {
-		return (
-			a.re * b.re - a.im * b.im,
-			a.re * b.im + a.im * b.re
-		)
-	}
-
-	scale :: fn(a: Self, factor: f32) -> Self {
-		return (a.re * factor, a.im * factor)
-	}
-
-	conjugate :: fn(a: Self) -> Self {
-		return (a.re, -a.im)
-	}
-
-	exp :: fn(angle: f32) -> Self {
-		return (cos(angle), sin(angle))
-	}
-
-	timesI :: fn(value: Self) -> Self {
-		return (-value.im, value.re)
-	}
-}
-
-OceanSpectrumParams :: struct {
-	resolution: u32
-	patchLength: f32
-	time: f32
-	amplitude: f32
-	windSpeed: f32
-	windDirection: float2
+Jonswap :: struct {
+    amplitude : f32 # Used to scale the Spectrum [1.0f, 5.0f] --> Value Range
+    spreadBlend : f32 # Used to blend between agitated water motion, and windDirection [0.0f, 1.0f]
+    swell : f32 # Influences wave choppines, the bigger the swell, the longer the wave length [0.0f, 1.0f]
+    gamma : f32 # Defines the Spectrum Peak [0.0f, 7.0f]
+    shortWavesFade : f32 # [0.0f, 1.0f]
+    windDirection: f32 # [0.0f, 360.0f]
+    fetch: f32 # Distance over which Wind impacts Wave Formation [0.0f, 10000.0f]
+    windSpeed: f32 # [0.0f, 100.0f]
+    angle: f32
+    alpha: f32
+    peakOmega: f32
 	depth: f32
-	shortWaveDamp: f32
-	choppiness: f32
-	heightScale: f32
 }
 
-sqrt :: fn "llvm.sqrt.f32"(x: f32) -> f32
-exp :: fn "__nv_expf"(x: f32) -> f32
-log :: fn "__nv_logf"(x: f32) -> f32
-sin :: fn "__nv_sinf"(x: f32) -> f32
-cos :: fn "__nv_cosf"(x: f32) -> f32
-tanh :: fn "__nv_tanhf"(x: f32) -> f32
-min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
-max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
+jonswap : Jonswap
+Size :: 256
+
+butterfly :: fn(step: u32, index: u32) -> struct {
+	indices: PixelCoord
+	twiddle: vec2
+} {
+    twoPi :: 6.28318530718
+    b := Size >> (step + 1)
+    w := b * (index / b)
+    i := (w + index) % Size
+	twiddle := vec2.fromAngle(-twoPi / @numCast(Size * w, f32))
+
+    # This is what makes it the inverse FFT
+    twiddle.y = -twiddle.y
+	return (
+		indices = (i, i + b),
+		twiddle = twiddle
+	)
+}
+
+dispersionRelation :: fn(kMag: f32) -> f32 {
+    return sqrt(G * kMag * tanh(min(kMag * jonswap.depth, 20)))
+}
+
+dispersionDerivative :: fn(kMag: f32) -> f32 {
+    th := tanh(min(kMag * jonswap.depth, 20))
+    ch := cosh(kMag * jonswap.depth)
+    return G * (jonswap.depth * kMag / ch / ch + th) / dispersionRelation(kMag) / 2
+}
+
+normalizationFactor :: fn(s: f32) -> f32 {
+    s2 := s * s
+    s3 := s2 * s
+    s4 := s3 * s
+	return if (s < 5) -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163 else -4.80e-08 * s4 + 1.07e-05 * s3 - 9.53e-04 * s2 + 5.90e-02 * s + 3.93e-01
+}
+
+cosine2s :: fn(theta: f32, s: f32) -> f32 {
+	return normalizationFactor(s) * pow(abs(cos(.5 theta)), 2 s)
+}
+
+spreadPower :: fn(omega: f32, peakOmega: f32) -> f32 {
+	return if (omega > peakOmega) 9.77 * pow(abs(omega / peakOmega), -2.5) else 6.97 * pow(abs(omega / peakOmega), 5)
+}
+
+directionSpectrum :: fn(theta: f32, omega: f32) -> f32  {
+	s := spreadPower(omega, jonswap.peakOmega) + 16 * tanh(min(omega / jonswap.peakOmega, 20)) * jonswap.swell * jonswap.swell
+	return lerp(2 / pi cos(theta) ** 2, cosine2s(theta - jonswap.angle, s), jonswap.spreadBlend)
+}
+
+tmaCorrection :: fn(omega: f32) -> f32 {
+	omegaH := omega * sqrt(jonswap.depth / G)
+	return if (omegaH <= 1) 0.5 omegaH ** 2
+		else if (omegaH < 2) 1 - 0.5 (2 - omegaH) ** 2
+		else 1
+}
+
+jonswapSpectrum :: fn(omega: f32) -> f32 {
+	sigma := if (omega <= jonswap.peakOmega) 0.07 else 0.09
+	
+	r := exp(-(omega - jonswap.peakOmega) * (omega - jonswap.peakOmega) / 2 / (sigma jonswap.peakOmega) ** 2)
+	
+	peakOmegaOverOmega := jonswap.peakOmega / omega
+	return jonswap.scale * tmaCorrection(omega) * jonswap.alpha * G * G *
+		(1 / (omega + 1e-6)) ** 5 *
+		exp(-1.25 * peakOmegaOverOmega ** 4) *
+		pow(abs(jonswap.gamma), r)
+}
+
+shortWavesFade :: fn(kLength: f32) -> f32 {
+	return exp(-jonswap.shortWavesFade * jonswap.shortWavesFade * kLength * kLength)
+}
+
+initSpectrum :: kernel(
+	displacement: Surface,
+	slope: Surface,
+) {
+	halfN := Size / 2
+	
+	coord := PixelCoord(
+		@blockIdX @blockDimX + @threadIdX,
+		@blockIdY @blockDimY + @threadIdY,
+	)
+	seed := coord.x + coord.y
+	gauss1 := gaussianPair()
+	gauss2 := gaussianPair()
+	
+	deltaK := tau / LENGTH_SCALE
+	K := (threadID.xy - halfN) * deltaK
+	kLength := length(K)
+	if (lowCutoff <= kLength and kLength <= highCutoff) {
+		kAngle = atan2(K.y, K.x)
+		omega = dispersionRelation(kLength)
+		dOmegadk = dispersionDerivative(kLength)
+		
+		spectrum = jonswapSpectrum(omega) directionSpectrum(kAngle, omega) shortWavesFade(kLength)
+		displacement.writeVec2(coord, gaussianPair(seed))
+		slop.writeVec2(coord, gaussianPair)
+		initial_spectrum[threadID.xy] = vec4(vec2(gauss2.x, gauss1.y) * vec2(sqrt(2 * spectrum * abs(dOmegadk) / kLength * deltaK * deltaK)), 0, 0)
+	} else {
+		displacement.writeVec2(0, 0)
+		initial_spectrum[threadID.xy] = vec4(0.0f, 0.0f, 0.0f, 0.0f)
+	}
+}
 
 linearIndex :: fn(resolution: u32, x: u32, y: u32) -> u32 {
 	return y * resolution + x
 }
 
-hashU32 :: fn(value: u32) -> u32 {
-	x := value * 747796405 + 2891336453
-	x = x * 277803737 + 12345
-	x = x * 747796405 + 2891336453
-	return x
-}
-
-randomUnit :: fn(seed: u32) -> f32 {
-	bits := hashU32(seed) & 16777215
-	return (@numCast(bits, f32) + 1.0) / 16777217.0
-}
-
-gaussianPair :: fn(seed: u32) -> float2 {
-	u0 := randomUnit(seed)
-	u1 := randomUnit(seed + 1)
-	radius := sqrt(-2.0 * log(u0))
-	angle := 2.0 * pi * u1
-	return (
-		radius * cos(angle),
-		radius * sin(angle)
-	)
-}
-
-centeredWaveVector :: fn(params: OceanSpectrumParams, x: u32, y: u32) -> float2 {
-	halfN := @numCast(params.resolution, f32) * 0.5
-	deltaK := 2.0 * pi / params.patchLength
-	return (
-		(@numCast(x, f32) - halfN) * deltaK,
-		(@numCast(y, f32) - halfN) * deltaK
-	)
-}
-
-phillipsSpectrum :: fn(params: OceanSpectrumParams, k: float2) -> f32 {
-	kLength := k.length()
-    if (kLength < 0.001) return 0
-
-    L := (params.windSpeed * params.windSpeed) / gravity
-    L2 := L * L
-
-    # directional alignment (k̂ · ŵ)^2
-    windAlignment := k.dot(params.windDirection) / kLength
-
-    if (windAlignment < 0) windAlignment *= 0.07
-    windAlignment *= windAlignment
-
-    # small-wave suppression scale
-    l2 := L / params.shortWaveDamp
-	l2 *= l2
-
-	k2 := k.dot(k)
-	k4 := k2 * k2
-	
-	return max(
-		params.amplitude *
-        exp(-1 / (k2 * L2)) /
-        k4 *
-        windAlignment *
-        exp(-k2 * l2),
-		0
-	)
-    # return max(Ph, 0)
-
-	# kLength := length2(k)
-	# if (kLength < epsilon) {
-	# 	return 0.0
-	# }
-
-	# kLength2 := kLength * kLength
-	# kLength4 := kLength2 * kLength2
-	# windDir := normalize2(params.windDirection)
-	# kDotW := dot2(normalize2(k), windDir)
-	# L := params.windSpeed * params.windSpeed / gravity
-	# L2 := L * L
-	# damping2 := params.shortWaveDamp * params.shortWaveDamp
-	# smallWaveFade := 1.0 / (1.0 + kLength2 * damping2)
-	# largeWaveFade := (kLength2 * L2) / (1.0 + kLength2 * L2)
-	# directional := kDotW * kDotW
-	# return params.amplitude * directional * largeWaveFade * smallWaveFade / kLength4
-}
-
-mirrorCoordinate :: fn(resolution: u32, coord: u32) -> u32 {
-	if (coord == 0) {
-		return 0
-	}
-	return resolution - coord
-}
-
-wrapCoordinate :: fn(resolution: u32, coord: u32, delta: s32) -> u32 {
-	if (delta < 0) {
-		if (coord == 0) {
-			return resolution - 1
-		}
-		return coord - 1
-	}
-	if (coord + 1 >= resolution) {
-		return 0
-	}
-	return coord + 1
-}
-
-initializeSpectrum :: kernel(
-	params: OceanSpectrumParams,
-	gaussian0: [^]float2,
-	gaussian1: [^]float2,
-	h0: [^]complex,
-	omega: [^]f32
-) {
-	x := @blockIdxX * @blockDimX + @threadIdxX
-	y := @blockIdxY * @blockDimY + @threadIdxY
-	if (x >= params.resolution or y >= params.resolution) {
-		return
-	}
-
-	idx := linearIndex(params.resolution, x, y)
-	k := centeredWaveVector(params, x, y)
-	spectrum := phillipsSpectrum(params, k)
-	scale := sqrt(max(0.0, spectrum * 0.5))
-	seedBase := idx * 4 + 1
-	gaussA := gaussianPair(seedBase)
-	gaussB := gaussianPair(seedBase + 2)
-
-	gaussian0[idx] = gaussA
-	gaussian1[idx] = gaussB
-
-	h0[idx] = (gaussA.x * scale, gaussA.y * scale)
-
-	kLength := k.length()
-	omega[idx] = sqrt(gravity * kLength * tanh(kLength * params.depth))
-}
-
-evolveSpectrum :: kernel(
-	params: OceanSpectrumParams,
-	h0: [^]complex,
-	omega: [^]f32,
-	heightSpectrum: [^]complex,
-	displacementXSpectrum: [^]complex,
-	displacementZSpectrum: [^]complex
-) {
-	x := @blockIdxX * @blockDimX + @threadIdxX
-	y := @blockIdxY * @blockDimY + @threadIdxY
-	if (x >= params.resolution or y >= params.resolution) {
-		return
-	}
-
-	idx := linearIndex(params.resolution, x, y)
-	mirrorX := mirrorCoordinate(params.resolution, x)
-	mirrorY := mirrorCoordinate(params.resolution, y)
-	mirrorIdx := linearIndex(params.resolution, mirrorX, mirrorY)
-	k := centeredWaveVector(params, x, y)
-	kDir := k.normalize()
-
-	phase := omega[idx] * params.time
-	forwardPhase :=  complex.exp(phase)
-	backwardPhase := complex.exp(-phase)
-	h0k := h0[idx]
-	h0MinusK := h0[mirrorIdx].conjugate()
-	height := h0k.multiply(forwardPhase).add(h0MinusK.multiply(backwardPhase))
-
-	choppy := params.choppiness
-
-	heightRot := height.timesI()
-	displacementX := heightRot.scale(-kDir.x * choppy)
-	displacementZ := heightRot.scale(-kDir.y * choppy)
-
-	heightSpectrum[idx] = height
-	displacementXSpectrum[idx] = displacementX
-	displacementZSpectrum[idx] = displacementZ
-}
-
-writeDisplacementToTexture :: kernel(
-	params: OceanSpectrumParams,
-	heightField: [^]f32,
-	displacementXField: [^]f32,
-	displacementZField: [^]f32,
-	slopeXField: [^]f32,
-	slopeZField: [^]f32,
-	outSurface: Surface
-) {
-	x := @blockIdxX * @blockDimX + @threadIdxX
-	y := @blockIdxY * @blockDimY + @threadIdxY
-	if (x >= params.resolution or y >= params.resolution) {
-		return
-	}
-
-	idx := linearIndex(params.resolution, x, y)
-	signFlip : f32 = if (((x + y) % 2) == 0) 1.0 else -1.0
-	height := heightField[idx] * signFlip * params.heightScale
-	displaceX := displacementXField[idx] * signFlip
-	displaceZ := displacementZField[idx] * signFlip
-	foam := min(1.0, max(0.0, 0.5 + 0.02 * height))
-	outSurface.write((x, y), (displaceX, height, displaceZ, foam))
-	# r : u8 = @numCast((x + y) % 2 * 255)
-	# g : u8 = @numCast((x + 1 + y) % 2 * 255)
-	# outSurface.writeRgba8((x, y), [r, g, 255, 255])
-	# surfaceStore4(
-	# 	outSurface,
-	# 	xBytes,
-	# 	@numCast(y, s32),
-	# 	0,
-	# 	0,
-	# 	0,
-	# 	@bitCast(one, u32)
-	# )
-}
-
-extractSpatialFields :: kernel(
-	params: OceanSpectrumParams,
-	heightSpatial: [^]complex,
-	displacementXSpatial: [^]complex,
-	displacementZSpatial: [^]complex,
-	heightField: [^]f32,
-	displacementXField: [^]f32,
-	displacementZField: [^]f32,
-	slopeXField: [^]f32,
-	slopeZField: [^]f32
-) {
-	x := @blockIdxX * @blockDimX + @threadIdxX
-	y := @blockIdxY * @blockDimY + @threadIdxY
-	if (x >= params.resolution or y >= params.resolution) {
-		return
-	}
-
-	idx := linearIndex(params.resolution, x, y)
-	invCount := 1.0 / (@numCast(params.resolution * params.resolution, f32))
-	heightField[idx] = heightSpatial[idx].re * invCount
-	displacementXField[idx] = displacementXSpatial[idx].re * invCount
-	displacementZField[idx] = displacementZSpatial[idx].re * invCount
-
-	leftX := wrapCoordinate(params.resolution, x, -1)
-	rightX := wrapCoordinate(params.resolution, x, 1)
-	upY := wrapCoordinate(params.resolution, y, -1)
-	downY := wrapCoordinate(params.resolution, y, 1)
-	leftHeight := heightField[linearIndex(params.resolution, leftX, y)]
-	rightHeight := heightField[linearIndex(params.resolution, rightX, y)]
-	upHeight := heightField[linearIndex(params.resolution, x, upY)]
-	downHeight := heightField[linearIndex(params.resolution, x, downY)]
-	slopeXField[idx] = 0.5 * (rightHeight - leftHeight)
-	slopeZField[idx] = 0.5 * (downHeight - upHeight)
-}
+# centeredWaveVector :: fn(params: OceanSpectrumParams, x: u32, y: u32) -> vec2 {
+# 	halfN := @numCast(params.resolution, f32) * 0.5
+# 	deltaK := 2.0 * pi / params.patchLength
+# 	return (
+# 		(@numCast(x, f32) - halfN) * deltaK,
+# 		(@numCast(y, f32) - halfN) * deltaK
+# 	)
+# }

@@ -12,26 +12,33 @@ log :: @cImport("sokol/sokol_log.h", "slog_")
 glueEnv :: fn "sglue_environment"() -> sg.environment
 swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 using import "fmt.blub"
-kernels := @cudaImport "tessendorf_ocean.cu.blub"
+kernels :: @cudaImport "tessendorf_ocean.cu.blub"
 
 OceanResolution :: 64
 OceanElementCount :: 256
 FftInverse :: 1
 
-OceanSpectrumParams :: struct {
-	resolution: u32
-	patchLength: f32
-	time: f32
-	amplitude: f32
-	windSpeed: f32
-	windDirection: vec2
-	depth: f32
-	shortWaveDamp: f32
-	choppiness: f32
-	heightScale: f32
+DevicePointer :: cu.DevicePointer
+jonswapDevice : DevicePointer
+jonswap : kernels.Jonswap impl {
+	upload :: fn(self: ^Self) {
+		jonswapDevice.copyToDevice(self, Self.size)
+	}
 }
 
-DevicePointer :: cu.DevicePointer
+# OceanSpectrumParams :: struct {
+# 	resolution: u32
+# 	patchLength: f32
+# 	time: f32
+# 	amplitude: f32
+# 	windSpeed: f32
+# 	windDirection: vec2
+# 	depth: f32
+# 	shortWaveDamp: f32
+# 	choppiness: f32
+# 	heightScale: f32
+# }
+
 
 OceanCudaState :: struct {
 	device: cu.Device
@@ -41,11 +48,11 @@ OceanCudaState :: struct {
 	writeDisplacementToTexture: cu.Kernel
 	extractSpatialFields: cu.Kernel
 	inversePlan: cu.fftHandle
-	params: OceanSpectrumParams
-	gaussian0: DevicePointer
-	gaussian1: DevicePointer
-	h0: DevicePointer
-	omega: DevicePointer
+	params: Jonswap
+	# gaussian0: DevicePointer
+	# gaussian1: DevicePointer
+	# h0: DevicePointer
+	# omega: DevicePointer
 	heightSpectrum: DevicePointer
 	displacementXSpectrum: DevicePointer
 	displacementZSpectrum: DevicePointer
@@ -287,7 +294,8 @@ setupOceanCuda :: fn() {
 	startupLog("cuda params ready")
 
 	startupLog("cuda module init")
-	module := ocean.device.init(@cudaPtx(kernels))
+	module := ocean.device.init(@cudaPtx kernels)
+	jonswapDevice = module.getGlobal(kernels.jonswap)
 	ocean.module = module
 	startupLog("cuda module loaded")
 	startupLog("load kernel initializeSpectrum")
@@ -610,8 +618,7 @@ event :: fn(e: ^app.event) {
 	}
 }
 
-# TODO: read automatic linkage names
-sokol_main :: fn "sokol_main"(argc: s32, argv: [^][^]u8) -> app.desc {
+sokol_main :: fn(argc: s32, argv: [^][^]u8) -> app.desc {
 	return (
 		init_cb = init,
 		frame_cb = frame,

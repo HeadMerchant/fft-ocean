@@ -111,6 +111,10 @@ DevicePointer :: struct {
 		println("Zeroing")
 		(fn "cuMemsetD8_v2"(dst: Self, value: u8, count: usize) -> Error)(self, 0, size).log()
 	}
+
+	copyToDevice :: fn(self: Self, src: ^void, size: usize) {
+		(fn "cuMemcpyHtoD_v2"(dst: Self, src: ^void, size: usize) -> Error)(self, src, size).log()
+	}
 }
 
 setDevice :: fn "cudaSetDevice"(device: s32) -> Error
@@ -238,6 +242,7 @@ Device :: s32
 Context :: struct {ptr: ^opaque}
 Module :: struct {ptr: ^opaque}
 Kernel :: struct {ptr: ^opaque}
+Symbol :: struct {ptr: ^opaque}
 
 Module impl {
 	load :: fn(image: ^u8) -> Self {
@@ -254,6 +259,18 @@ Module impl {
 			name: ^u8
 		) -> Error)(^resultKernel, self, name).log()
 		return resultKernel
+	}
+
+	getGlobal :: fn(self: Self, name: ^u8) -> DevicePointer {
+		ptr: DevicePointer
+		toss: usize
+		(fn "cuModuleGetGlobal"(
+			dptr: ^DevicePointer,
+			bytes: ^usize,
+			hmod: Module,
+			name: ^u8,
+		) -> Error)(^ptr, ^toss, self, name).log()
+		return ptr
 	}
 }
 
