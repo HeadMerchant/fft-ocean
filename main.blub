@@ -14,62 +14,22 @@ swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 using import "fmt.blub"
 kernels :: @cudaImport "tessendorf_ocean.cu.blub"
 
-OceanResolution :: 256
+OceanResolution :: kernels.Size
 OceanBlockSize :: 8
 
-OceanJonswap :: struct {
-	scale: f32
-	angle: f32
-	spreadBlend: f32
-	swell: f32
-	alpha: f32
-	peakOmega: f32
-	gamma: f32
-	shortWavesFade: f32
-}
-
-OceanParams :: struct {
-	resolution: u32
-	lengthScale: f32
-	frameTime: f32
-	deltaTime: f32
-	repeatTime: f32
-	depth: f32
-	lowCutoff: f32
-	highCutoff: f32
-	seed: u32
-	jonswap: OceanJonswap
-	lambda: vec2
-	foamBias: f32
-	foamDecayRate: f32
-	foamAdd: f32
-	foamThreshold: f32
-}
-
-OceanTexture :: struct {
+CudaTexture :: struct {
 	texture: gl.Texture2d
 	resource: cu.GraphicsResource
 } impl {
 	create :: fn() -> Self {
+		# TODO: initialize multiple at once?
 		texture := gl.Texture2d.create(1, .Rg32f, OceanResolution, OceanResolution)
 		return (texture = texture, resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore))
 	}
-
-	destroy :: fn(self: ^Self) {
-		self.resource.unregister()
-		self.texture.destroy()
-	}
-}
-
-OceanSurfaces :: struct {
-	initial: cu.Surface
-	spectrumA: cu.Surface
-	spectrumB: cu.Surface
-	spectrumC: cu.Surface
-	spectrumD: cu.Surface
-	displacement: cu.Surface
-	heightFoam: cu.Surface
-	slope: cu.Surface
+	# destroy :: fn(self: ^Self) {
+	# 	self.resource.unregister()
+	# 	self.texture.destroy()
+	# }
 }
 
 OceanCudaState :: struct {
@@ -80,19 +40,63 @@ OceanCudaState :: struct {
 	horizontalFft: cu.Kernel
 	verticalFft: cu.Kernel
 	assembleMaps: cu.Kernel
-	params: OceanParams
-	initial: OceanTexture
-	spectrumA: OceanTexture
-	spectrumB: OceanTexture
-	spectrumC: OceanTexture
-	spectrumD: OceanTexture
-	displacement: OceanTexture
-	heightFoam: OceanTexture
-	slope: OceanTexture
+	params: kernels.OceanParams
+	initial: CudaTexture
+	horizontalDisplacement: CudaTexture
+	spectrumB: CudaTexture
+	spectrumC: CudaTexture
+	spectrumD: CudaTexture
+	displacement: CudaTexture
+	heightFoam: CudaTexture
+	slope: CudaTexture
 	initialized: bool
 }
 
 ocean : OceanCudaState
+
+Surfaces :: struct {
+	initial: cu.Surface
+	horizontalDisplacement: cu.Surface
+	spectrumB: cu.Surface
+	spectrumC: cu.Surface
+	spectrumD: cu.Surface
+	displacement: cu.Surface
+	heightFoam: cu.Surface
+	slope: cu.Surface
+} impl {
+	map :: fn() -> Self {
+		return (
+			initial = ocean.initial.resource.mapSurface(),
+			horizontalDisplacement = ocean.horizontalDisplacement.resource.mapSurface(),
+			spectrumB = ocean.spectrumB.resource.mapSurface(),
+			spectrumC = ocean.spectrumC.resource.mapSurface(),
+			spectrumD = ocean.spectrumD.resource.mapSurface(),
+			displacement = ocean.displacement.resource.mapSurface(),
+			heightFoam = ocean.heightFoam.resource.mapSurface(),
+			slope = ocean.slope.resource.mapSurface(),
+		)
+	}
+	
+	unmap :: fn(self: ^Self) {
+		self.initial.destroy()
+		self.horizontalDisplacement.destroy()
+		self.spectrumB.destroy()
+		self.spectrumC.destroy()
+		self.spectrumD.destroy()
+		self.displacement.destroy()
+		self.heightFoam.destroy()
+		self.slope.destroy()
+		ocean.initial.resource.unmap()
+		ocean.horizontalDisplacement.resource.unmap()
+		ocean.spectrumB.resource.unmap()
+		ocean.spectrumC.resource.unmap()
+		ocean.spectrumD.resource.unmap()
+		ocean.displacement.resource.unmap()
+		ocean.heightFoam.resource.unmap()
+		ocean.slope.resource.unmap()
+	}
+}
+
 startupFrameLogged := false
 
 startupLog :: fn(message: []u8) {
@@ -120,47 +124,15 @@ oceanBlock :: fn() -> cu.Block {
 	return (OceanBlockSize, OceanBlockSize, 1)
 }
 
-mapOceanSurfaces :: fn() -> OceanSurfaces {
-	return (
-		initial = ocean.initial.resource.mapSurface(),
-		spectrumA = ocean.spectrumA.resource.mapSurface(),
-		spectrumB = ocean.spectrumB.resource.mapSurface(),
-		spectrumC = ocean.spectrumC.resource.mapSurface(),
-		spectrumD = ocean.spectrumD.resource.mapSurface(),
-		displacement = ocean.displacement.resource.mapSurface(),
-		heightFoam = ocean.heightFoam.resource.mapSurface(),
-		slope = ocean.slope.resource.mapSurface(),
-	)
-}
-
-unmapOceanSurfaces :: fn(surfaces: OceanSurfaces) {
-	surfaces.initial.destroy()
-	surfaces.spectrumA.destroy()
-	surfaces.spectrumB.destroy()
-	surfaces.spectrumC.destroy()
-	surfaces.spectrumD.destroy()
-	surfaces.displacement.destroy()
-	surfaces.heightFoam.destroy()
-	surfaces.slope.destroy()
-	ocean.initial.resource.unmap()
-	ocean.spectrumA.resource.unmap()
-	ocean.spectrumB.resource.unmap()
-	ocean.spectrumC.resource.unmap()
-	ocean.spectrumD.resource.unmap()
-	ocean.displacement.resource.unmap()
-	ocean.heightFoam.resource.unmap()
-	ocean.slope.resource.unmap()
-}
-
 setupOceanTextures :: fn() {
-	ocean.initial = OceanTexture.create()
-	ocean.spectrumA = OceanTexture.create()
-	ocean.spectrumB = OceanTexture.create()
-	ocean.spectrumC = OceanTexture.create()
-	ocean.spectrumD = OceanTexture.create()
-	ocean.displacement = OceanTexture.create()
-	ocean.heightFoam = OceanTexture.create()
-	ocean.slope = OceanTexture.create()
+	ocean.initial = CudaTexture.create()
+	ocean.horizontalDisplacement = CudaTexture.create()
+	ocean.spectrumB = CudaTexture.create()
+	ocean.spectrumC = CudaTexture.create()
+	ocean.spectrumD = CudaTexture.create()
+	ocean.displacement = CudaTexture.create()
+	ocean.heightFoam = CudaTexture.create()
+	ocean.slope = CudaTexture.create()
 	sg.reset_state_cache()
 	imageDesc := sg.image_desc(
 		usage = (immutable = true),
@@ -204,7 +176,7 @@ setupOceanCuda :: fn() {
 	}
 
 	startupLog("cuda setup begin")
-	ocean.params = OceanParams(
+	ocean.params = kernels.OceanParams(
 		resolution = @numCast(OceanResolution, u32),
 		lengthScale = 256,
 		frameTime = 0,
@@ -244,17 +216,17 @@ setupOceanCuda :: fn() {
 	ocean.assembleMaps = module.loadKernel(kernels.assembleMaps)
 	startupLog("cuda kernels loaded")
 	startupLog("launch initializeSpectrum")
-	surfaces := mapOceanSurfaces()
+	surfaces := Surfaces.map()
 	args := [
 		^ocean.params,
 		^surfaces.initial,
-		^surfaces.displacement,
-		^surfaces.heightFoam,
-		^surfaces.slope,
+		# ^surfaces.displacement,
+		# ^surfaces.heightFoam,
+		# ^surfaces.slope,
 	]^void
 	ocean.initializeSpectrum.launch(args[^], oceanGrid(), oceanBlock(), 0)
 	cu.sync().log()
-	unmapOceanSurfaces(surfaces)
+	surfaces.unmap()
 	ocean.initialized = true
 	startupLog("cuda setup complete")
 }
@@ -262,18 +234,19 @@ setupOceanCuda :: fn() {
 updateOcean :: fn(frameTime: f32, dt: f32) {
 	ocean.params.frameTime = frameTime
 	ocean.params.deltaTime = dt
-	surfaces := mapOceanSurfaces()
+	surfaces := Surfaces.map()
+	# TODO: constant memory
 	updateArgs := [
 		^ocean.params,
 		^surfaces.initial,
-		^surfaces.spectrumA,
+		^surfaces.horizontalDisplacement,
 		^surfaces.spectrumB,
 		^surfaces.spectrumC,
 		^surfaces.spectrumD,
 	]^void
 	ocean.updateSpectrum.launch(updateArgs[^], oceanGrid(), oceanBlock(), 0)
 	fftArgs := [
-		^surfaces.spectrumA,
+		^surfaces.horizontalDisplacement,
 		^surfaces.spectrumB,
 		^surfaces.spectrumC,
 		^surfaces.spectrumD,
@@ -282,7 +255,7 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 	ocean.verticalFft.launch(fftArgs[^], (OceanResolution, 1, 1), (OceanResolution, 1, 1), 0)
 	assembleArgs := [
 		^ocean.params,
-		^surfaces.spectrumA,
+		^surfaces.horizontalDisplacement,
 		^surfaces.spectrumB,
 		^surfaces.spectrumC,
 		^surfaces.spectrumD,
@@ -292,7 +265,7 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 	]^void
 	ocean.assembleMaps.launch(assembleArgs[^], oceanGrid(), oceanBlock(), 0)
 	cu.sync().log()
-	unmapOceanSurfaces(surfaces)
+	surfaces.unmap()
 }
 
 sg.resource_state impl {
@@ -341,16 +314,6 @@ Input :: struct {
 input := Input()
 
 cleanup :: fn() {
-	if (ocean.initialized) {
-		ocean.initial.destroy()
-		ocean.spectrumA.destroy()
-		ocean.spectrumB.destroy()
-		ocean.spectrumC.destroy()
-		ocean.spectrumD.destroy()
-		ocean.displacement.destroy()
-		ocean.heightFoam.destroy()
-		ocean.slope.destroy()
-	}
 	sg.shutdown()
 }
 
@@ -373,7 +336,8 @@ void main() {
     vec2 ocean = texture(ocean_tex, uv).rg;
     float height = ocean.r;
     float foam = ocean.g;
-	frag_color = vec4(vec3(height * 6.0 + 0.5 + foam), 1.0);
+	// frag_color = vec4(vec3(height * 6.0 + 0.5 + foam), 1.0);
+	frag_color = vec4(height, foam, 0.0, 1.0);
 }\x00"
 
 startTime : u64 = 0

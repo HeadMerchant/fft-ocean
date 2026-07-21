@@ -30,25 +30,29 @@ Surface impl {
 		surface: Self,
 		x: u32,
 		y: u32,
-		a: u32,
+		r: u32,
+		g: u32,
 		b: u32,
-		c: u32,
-		d: u32,
+		a: u32,
 	)
 
 	surfaceStore2 :: fn "llvm.nvvm.sust.p.2d.v2i32.trap"(
 		surface: Self,
 		x: u32,
 		y: u32,
-		a: u32,
-		b: u32,
+		r: u32,
+		g: u32,
 	)
 
-	surfaceLoad2 :: fn "llvm.nvvm.suld.2d.v2i32.trap"(
+	surfaceLoad2Raw :: fn "llvm.nvvm.suld.2d.v2i32.trap"(
 		surface: Self,
 		x: u32,
 		y: u32,
 	) -> SurfaceLoad2
+
+	load2 :: fn(self: Self, x: u32, y: u32) -> SurfaceLoad2 {
+		return self.surfaceLoad2Raw(x * SurfaceLoad2.size, y)
+	}
 
 	write :: fn(self: Self, coord: PixelCoord, val: vec4) {
 		a := @bitCast(val.x, u32)
@@ -90,12 +94,12 @@ Surface impl {
 	}
 
 	readVec2 :: fn(self: Self, coord: PixelCoord) -> vec2 {
-		value := self.surfaceLoad2(coord.x, coord.y)
+		value := self.load2(coord.x, coord.y)
 		return (@bitCast(value.x, f32), @bitCast(value.y, f32))
 	}
 
 	readComplex :: fn(self: Self, coord: PixelCoord) -> complex {
-		value := self.surfaceLoad2(coord.x, coord.y)
+		value := self.load2(coord.x, coord.y)
 		return (@bitCast(value.x, f32), @bitCast(value.y, f32))
 	}
 }

@@ -105,9 +105,6 @@ dispatchCoord :: fn() -> PixelCoord {
 initializeSpectrum :: kernel(
 	params: OceanParams,
 	initial: Surface,
-	displacementOut: Surface,
-	heightFoamOut: Surface,
-	slopeOut: Surface,
 ) {
 	coord := dispatchCoord()
 	if (coord.x >= params.resolution or coord.y >= params.resolution) {
@@ -134,9 +131,6 @@ initializeSpectrum :: kernel(
 		}
 	}
 	initial.writeVec2(coord, value)
-	displacementOut.writeVec2(coord, (0, 0))
-	heightFoamOut.writeVec2(coord, (0, 0))
-	slopeOut.writeVec2(coord, (0, 0))
 }
 
 updateSpectrum :: kernel(
