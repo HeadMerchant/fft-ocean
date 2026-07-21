@@ -17,6 +17,7 @@ TextureTarget :: enum(u32) {
 TextureInternalFormat :: enum(u32) {
 	Rgba8 = 0x8058
 	Rgba32f = 0x8814
+	Rg32f = 0x8230
 }
 TextureFormat :: enum(u32) {
 	Rgba = 0x1908
@@ -72,6 +73,11 @@ Texture2d :: struct {
 
 	bind :: fn(self: Self) {
 		(fn "glBindTexture"(target: TextureTarget, texture: Self))(.Texture2D, self)
+	}
+
+	destroy :: fn(self: Self) {
+		texture := self
+		(fn "glDeleteTextures"(count: s32, textures: ^Self))(1, ^texture)
 	}
 
 

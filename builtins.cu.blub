@@ -20,6 +20,10 @@ surfaceStore4 :: fn "llvm.nvvm.sust.b.2d.v4i32.trap"(
 
 
 Surface :: u64
+SurfaceLoad2 :: struct {
+	x: u32
+	y: u32
+}
 Surface impl {
 	# NVPTX lowers these intrinsics by scaling X for the element width; just pass texel coordinates here
 	surfaceStore4 :: fn "llvm.nvvm.sust.p.2d.v4i32.trap"(
@@ -39,6 +43,12 @@ Surface impl {
 		a: u32,
 		b: u32,
 	)
+
+	surfaceLoad2 :: fn "llvm.nvvm.suld.2d.v2i32.trap"(
+		surface: Self,
+		x: u32,
+		y: u32,
+	) -> SurfaceLoad2
 
 	write :: fn(self: Self, coord: PixelCoord, val: vec4) {
 		a := @bitCast(val.x, u32)
@@ -69,5 +79,23 @@ Surface impl {
 			@bitCast(val.y),
 		)
 	}
-}
 
+	writeComplex :: fn(self: Self, coord: PixelCoord, val: complex) {
+		self.surfaceStore2(
+			coord.x,
+			coord.y,
+			@bitCast(val.re),
+			@bitCast(val.im),
+		)
+	}
+
+	readVec2 :: fn(self: Self, coord: PixelCoord) -> vec2 {
+		value := self.surfaceLoad2(coord.x, coord.y)
+		return (@bitCast(value.x, f32), @bitCast(value.y, f32))
+	}
+
+	readComplex :: fn(self: Self, coord: PixelCoord) -> complex {
+		value := self.surfaceLoad2(coord.x, coord.y)
+		return (@bitCast(value.x, f32), @bitCast(value.y, f32))
+	}
+}

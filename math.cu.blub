@@ -23,6 +23,18 @@ vec2 :: struct {
 	fromAngle :: fn(a: f32) -> Self {
 		return (cos(a), sin(a))
 	}
+
+	add :: fn(a: Self, b: Self) -> Self {
+		return (a.x + b.x, a.y + b.y)
+	}
+
+	sub :: fn(a: Self, b: Self) -> Self {
+		return (a.x - b.x, a.y - b.y)
+	}
+
+	scale :: fn(x: Self, a: f32) -> Self {
+		return (a x.x, a x.y)
+	}
 }
 
 vec4 :: struct {
@@ -39,6 +51,10 @@ complex :: struct {
 	re: f32
 	im: f32
 } impl {
+	fromVec2 :: fn(a: vec2) -> Self {
+		return (a.x, a.y)
+	}
+
 	add :: fn(a: Self, b: Self) -> Self {
 		return (a.re + b.re, a.im + b.im)
 	}
@@ -54,9 +70,7 @@ complex :: struct {
 		return (a.re * factor, a.im * factor)
 	}
 
-	conjugate :: fn(a: Self) -> Self {
-		return (a.re, -a.im)
-	}
+	conjugate :: fn(a: Self) -> Self {return (a.re, -a.im)}
 
 	exp :: fn(angle: f32) -> Self {
 		return (cos(angle), sin(angle))
@@ -76,6 +90,8 @@ log :: fn "__nv_logf"(x: f32) -> f32
 sin :: fn "__nv_sinf"(x: f32) -> f32
 cos :: fn "__nv_cosf"(x: f32) -> f32
 tanh :: fn "__nv_tanhf"(x: f32) -> f32
+atan2 :: fn "__nv_atan2f"(y: f32, x: f32) -> f32
+floor :: fn "llvm.floor.f32"(x: f32) -> f32
 min :: fn "llvm.minnum.f32"(a: f32, b: f32) -> f32
 max :: fn "llvm.maxnum.f32"(a: f32, b: f32) -> f32
 

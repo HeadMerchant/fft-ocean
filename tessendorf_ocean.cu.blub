@@ -1,138 +1,261 @@
 using import "math.cu.blub"
 using import "builtins.cu.blub"
+
+Size :: 256
 gravity :: 9.81
-G :: gravity
 
 Jonswap :: struct {
-    amplitude : f32 # Used to scale the Spectrum [1.0f, 5.0f] --> Value Range
-    spreadBlend : f32 # Used to blend between agitated water motion, and windDirection [0.0f, 1.0f]
-    swell : f32 # Influences wave choppines, the bigger the swell, the longer the wave length [0.0f, 1.0f]
-    gamma : f32 # Defines the Spectrum Peak [0.0f, 7.0f]
-    shortWavesFade : f32 # [0.0f, 1.0f]
-    windDirection: f32 # [0.0f, 360.0f]
-    fetch: f32 # Distance over which Wind impacts Wave Formation [0.0f, 10000.0f]
-    windSpeed: f32 # [0.0f, 100.0f]
-    angle: f32
-    alpha: f32
-    peakOmega: f32
+	scale: f32
+	angle: f32
+	spreadBlend: f32
+	swell: f32
+	alpha: f32
+	peakOmega: f32
+	gamma: f32
+	shortWavesFade: f32
+}
+
+OceanParams :: struct {
+	resolution: u32
+	lengthScale: f32
+	frameTime: f32
+	deltaTime: f32
+	repeatTime: f32
 	depth: f32
+	lowCutoff: f32
+	highCutoff: f32
+	seed: u32
+	jonswap: Jonswap
+	lambda: vec2
+	foamBias: f32
+	foamDecayRate: f32
+	foamAdd: f32
+	foamThreshold: f32
 }
 
-jonswap : Jonswap
-Size :: 256
+@shared fftBuffer : [2][256]complex
+barrier :: fn "llvm.nvvm.barrier0"()
 
-butterfly :: fn(step: u32, index: u32) -> struct {
-	indices: PixelCoord
-	twiddle: vec2
-} {
-    twoPi :: 6.28318530718
-    b := Size >> (step + 1)
-    w := b * (index / b)
-    i := (w + index) % Size
-	twiddle := vec2.fromAngle(-twoPi / @numCast(Size * w, f32))
-
-    # This is what makes it the inverse FFT
-    twiddle.y = -twiddle.y
-	return (
-		indices = (i, i + b),
-		twiddle = twiddle
-	)
+dispersion :: fn(params: OceanParams, k: f32) -> f32 {
+	return sqrt(gravity * k * tanh(min(k * params.depth, 20)))
 }
 
-dispersionRelation :: fn(kMag: f32) -> f32 {
-    return sqrt(G * kMag * tanh(min(kMag * jonswap.depth, 20)))
-}
-
-dispersionDerivative :: fn(kMag: f32) -> f32 {
-    th := tanh(min(kMag * jonswap.depth, 20))
-    ch := cosh(kMag * jonswap.depth)
-    return G * (jonswap.depth * kMag / ch / ch + th) / dispersionRelation(kMag) / 2
+dispersionDerivative :: fn(params: OceanParams, k: f32) -> f32 {
+	th := tanh(min(k * params.depth, 20))
+	ch := cosh(k * params.depth)
+	return gravity * (params.depth * k / ch / ch + th) / dispersion(params, k) / 2
 }
 
 normalizationFactor :: fn(s: f32) -> f32 {
-    s2 := s * s
-    s3 := s2 * s
-    s4 := s3 * s
-	return if (s < 5) -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163 else -4.80e-08 * s4 + 1.07e-05 * s3 - 9.53e-04 * s2 + 5.90e-02 * s + 3.93e-01
+	s2 := s * s
+	s3 := s2 * s
+	s4 := s3 * s
+	return if (s < 5) -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163
+		else -4.80e-08 * s4 + 1.07e-05 * s3 - 9.53e-04 * s2 + 5.90e-02 * s + 0.393
 }
 
 cosine2s :: fn(theta: f32, s: f32) -> f32 {
-	return normalizationFactor(s) * pow(abs(cos(.5 theta)), 2 s)
+	return normalizationFactor(s) * pow(abs(cos(0.5 * theta)), 2 * s)
 }
 
 spreadPower :: fn(omega: f32, peakOmega: f32) -> f32 {
-	return if (omega > peakOmega) 9.77 * pow(abs(omega / peakOmega), -2.5) else 6.97 * pow(abs(omega / peakOmega), 5)
+	ratio := abs(omega / peakOmega)
+	return if (omega > peakOmega) 9.77 * pow(ratio, -2.5) else 6.97 * pow(ratio, 5)
 }
 
-directionSpectrum :: fn(theta: f32, omega: f32) -> f32  {
-	s := spreadPower(omega, jonswap.peakOmega) + 16 * tanh(min(omega / jonswap.peakOmega, 20)) * jonswap.swell * jonswap.swell
-	return lerp(2 / pi cos(theta) ** 2, cosine2s(theta - jonswap.angle, s), jonswap.spreadBlend)
+directionSpectrum :: fn(params: OceanParams, theta: f32, omega: f32) -> f32 {
+	spectrum := params.jonswap
+	s := spreadPower(omega, spectrum.peakOmega) + 16 * tanh(min(omega / spectrum.peakOmega, 20)) * spectrum.swell * spectrum.swell
+	a := 2 / pi * cos(theta) * cos(theta)
+	b := cosine2s(theta - spectrum.angle, s)
+	return lerp(a, b, spectrum.spreadBlend)
 }
 
-tmaCorrection :: fn(omega: f32) -> f32 {
-	omegaH := omega * sqrt(jonswap.depth / G)
-	return if (omegaH <= 1) 0.5 omegaH ** 2
-		else if (omegaH < 2) 1 - 0.5 (2 - omegaH) ** 2
+tmaCorrection :: fn(params: OceanParams, omega: f32) -> f32 {
+	omegaH := omega * sqrt(params.depth / gravity)
+	return if (omegaH <= 1) 0.5 * omegaH * omegaH
+		else if (omegaH < 2) 1 - 0.5 * (2 - omegaH) * (2 - omegaH)
 		else 1
 }
 
-jonswapSpectrum :: fn(omega: f32) -> f32 {
-	sigma := if (omega <= jonswap.peakOmega) 0.07 else 0.09
-	
-	r := exp(-(omega - jonswap.peakOmega) * (omega - jonswap.peakOmega) / 2 / (sigma jonswap.peakOmega) ** 2)
-	
-	peakOmegaOverOmega := jonswap.peakOmega / omega
-	return jonswap.scale * tmaCorrection(omega) * jonswap.alpha * G * G *
-		(1 / (omega + 1e-6)) ** 5 *
-		exp(-1.25 * peakOmegaOverOmega ** 4) *
-		pow(abs(jonswap.gamma), r)
+jonswapSpectrum :: fn(params: OceanParams, omega: f32) -> f32 {
+	spectrum := params.jonswap
+	sigma := if (omega <= spectrum.peakOmega) 0.07 else 0.09
+	difference := omega - spectrum.peakOmega
+	r := exp(-difference * difference / 2 / sigma / sigma / spectrum.peakOmega / spectrum.peakOmega)
+	oneOverOmega := 1 / omega
+	peakRatio := spectrum.peakOmega / omega
+	omegaPower := oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega
+	peakShape := exp(-1.25 * peakRatio * peakRatio * peakRatio * peakRatio)
+	return spectrum.scale * tmaCorrection(params, omega) * spectrum.alpha * gravity * gravity * omegaPower * peakShape * pow(abs(spectrum.gamma), r)
 }
 
-shortWavesFade :: fn(kLength: f32) -> f32 {
-	return exp(-jonswap.shortWavesFade * jonswap.shortWavesFade * kLength * kLength)
+shortWaveFade :: fn(params: OceanParams, k: f32) -> f32 {
+	fade := params.jonswap.shortWavesFade
+	return exp(-fade * fade * k * k)
 }
 
-initSpectrum :: kernel(
-	displacement: Surface,
-	slope: Surface,
-) {
-	halfN := Size / 2
-	
-	coord := PixelCoord(
-		@blockIdX @blockDimX + @threadIdX,
-		@blockIdY @blockDimY + @threadIdY,
+dispatchCoord :: fn() -> PixelCoord {
+	return (
+		@blockIdxX * @blockDimX + @threadIdxX,
+		@blockIdxY * @blockDimY + @threadIdxY,
 	)
-	seed := coord.x + coord.y
-	gauss1 := gaussianPair()
-	gauss2 := gaussianPair()
-	
-	deltaK := tau / LENGTH_SCALE
-	K := (threadID.xy - halfN) * deltaK
-	kLength := length(K)
-	if (lowCutoff <= kLength and kLength <= highCutoff) {
-		kAngle = atan2(K.y, K.x)
-		omega = dispersionRelation(kLength)
-		dOmegadk = dispersionDerivative(kLength)
-		
-		spectrum = jonswapSpectrum(omega) directionSpectrum(kAngle, omega) shortWavesFade(kLength)
-		displacement.writeVec2(coord, gaussianPair(seed))
-		slop.writeVec2(coord, gaussianPair)
-		initial_spectrum[threadID.xy] = vec4(vec2(gauss2.x, gauss1.y) * vec2(sqrt(2 * spectrum * abs(dOmegadk) / kLength * deltaK * deltaK)), 0, 0)
-	} else {
-		displacement.writeVec2(0, 0)
-		initial_spectrum[threadID.xy] = vec4(0.0f, 0.0f, 0.0f, 0.0f)
+}
+
+initializeSpectrum :: kernel(
+	params: OceanParams,
+	initial: Surface,
+	displacementOut: Surface,
+	heightFoamOut: Surface,
+	slopeOut: Surface,
+) {
+	coord := dispatchCoord()
+	if (coord.x >= params.resolution or coord.y >= params.resolution) {
+		return
 	}
+	halfN := @numCast(params.resolution, f32) * 0.5
+	deltaK := tau / params.lengthScale
+	k := vec2(
+		(@numCast(coord.x, f32) - halfN) * deltaK,
+		(@numCast(coord.y, f32) - halfN) * deltaK,
+	)
+	kLength := k.length()
+	value := vec2(0, 0)
+	if (params.lowCutoff <= kLength) {
+		if (kLength <= params.highCutoff) {
+			seed := coord.x + params.resolution * coord.y + params.resolution + params.seed
+			gauss1 := gaussianPair(seed)
+			gauss2 := gaussianPair(seed + 2)
+			omega := dispersion(params, kLength)
+			dOmegaDk := dispersionDerivative(params, kLength)
+			energy := jonswapSpectrum(params, omega) * directionSpectrum(params, atan2(k.y, k.x), omega) * shortWaveFade(params, kLength)
+			amplitude := sqrt(2 * energy * abs(dOmegaDk) / kLength * deltaK * deltaK)
+			value = (gauss2.x * amplitude, gauss1.y * amplitude)
+		}
+	}
+	initial.writeVec2(coord, value)
+	displacementOut.writeVec2(coord, (0, 0))
+	heightFoamOut.writeVec2(coord, (0, 0))
+	slopeOut.writeVec2(coord, (0, 0))
 }
 
-linearIndex :: fn(resolution: u32, x: u32, y: u32) -> u32 {
-	return y * resolution + x
+updateSpectrum :: kernel(
+	params: OceanParams,
+	initial: Surface,
+	spectrumA: Surface,
+	spectrumB: Surface,
+	spectrumC: Surface,
+	spectrumD: Surface,
+) {
+	coord := dispatchCoord()
+	if (coord.x >= params.resolution or coord.y >= params.resolution) {
+		return
+	}
+	mirror := PixelCoord((params.resolution - coord.x) % params.resolution, (params.resolution - coord.y) % params.resolution)
+	h0 := initial.readComplex(coord)
+	h0Conjugate := initial.readComplex(mirror).conjugate()
+	halfN := @numCast(params.resolution, f32) 0.5
+	deltaK := tau / params.lengthScale
+	k := vec2((@numCast(coord.x, f32) - halfN) * deltaK, (@numCast(coord.y, f32) - halfN) * deltaK)
+	kMagnitude := k.length()
+	kReciprocal := if (kMagnitude < 0.0001) 1 else 1 / kMagnitude
+	w0 := tau / params.repeatTime
+	phase := floor(sqrt(gravity * kMagnitude) / w0) * w0 * params.frameTime
+	exponent := complex.exp(phase)
+	hTilde := h0 exponent + h0Conjugate exponent.conjugate()
+	ih := hTilde.timesI()
+	displacementX := ih.scale(k.x * kReciprocal)
+	displacementY := hTilde
+	displacementZ := ih.scale(k.y * kReciprocal)
+	displacementXdx := hTilde.scale(-k.x * k.x * kReciprocal)
+	displacementYdx := ih.scale(k.x)
+	displacementZdx := hTilde.scale(-k.x * k.y * kReciprocal)
+	displacementYdz := ih.scale(k.y)
+	displacementZdz := hTilde.scale(-k.y * k.y * kReciprocal)
+	spectrumA.writeVec2(coord, (displacementX.re - displacementZ.im, displacementX.im + displacementZ.re))
+	spectrumB.writeVec2(coord, (displacementY.re - displacementZdx.im, displacementY.im + displacementZdx.re))
+	spectrumC.writeVec2(coord, (displacementYdx.re - displacementYdz.im, displacementYdx.im + displacementYdz.re))
+	spectrumD.writeVec2(coord, (displacementXdx.re - displacementZdz.im, displacementXdx.im + displacementZdz.re))
 }
 
-# centeredWaveVector :: fn(params: OceanSpectrumParams, x: u32, y: u32) -> vec2 {
-# 	halfN := @numCast(params.resolution, f32) * 0.5
-# 	deltaK := 2.0 * pi / params.patchLength
-# 	return (
-# 		(@numCast(x, f32) - halfN) * deltaK,
-# 		(@numCast(y, f32) - halfN) * deltaK
-# 	)
-# }
+butterflyStep :: fn(step: u32, source: u32, destination: u32, index: u32) {
+	b := Size >> (step + 1)
+	w := b * (index / b)
+	i := (w + index) % Size
+	twiddle := complex.exp(tau * @numCast(w, f32) / @numCast(Size, f32))
+	fftBuffer[destination][index] = fftBuffer[source][i] + twiddle fftBuffer[source][i + b]
+}
+
+fftSurface :: fn(surface: Surface, horizontal: bool) {
+	index := @threadIdxX
+	coord := if (horizontal) PixelCoord(index, @blockIdxY) else PixelCoord(@blockIdxX, index)
+	fftBuffer[0][index] = surface.readComplex(coord)
+	barrier()
+	butterflyStep(0, 0, 1, index)
+	barrier()
+	butterflyStep(1, 1, 0, index)
+	barrier()
+	butterflyStep(2, 0, 1, index)
+	barrier()
+	butterflyStep(3, 1, 0, index)
+	barrier()
+	butterflyStep(4, 0, 1, index)
+	barrier()
+	butterflyStep(5, 1, 0, index)
+	barrier()
+	butterflyStep(6, 0, 1, index)
+	barrier()
+	butterflyStep(7, 1, 0, index)
+	barrier()
+	surface.writeComplex(coord, fftBuffer[0][index])
+	barrier()
+}
+
+horizontalFft :: kernel(a: Surface, b: Surface, c: Surface, d: Surface) {
+	fftSurface(a, true)
+	fftSurface(b, true)
+	fftSurface(c, true)
+	fftSurface(d, true)
+}
+
+verticalFft :: kernel(a: Surface, b: Surface, c: Surface, d: Surface) {
+	fftSurface(a, false)
+	fftSurface(b, false)
+	fftSurface(c, false)
+	fftSurface(d, false)
+}
+
+clamp01 :: fn(value: f32) -> f32 {
+	return min(max(value, 0), 1)
+}
+
+assembleMaps :: kernel(
+	params: OceanParams,
+	spectrumA: Surface,
+	spectrumB: Surface,
+	spectrumC: Surface,
+	spectrumD: Surface,
+	displacementOut: Surface,
+	heightFoamOut: Surface,
+	slopeOut: Surface,
+) {
+	coord := dispatchCoord()
+	if (coord.x >= params.resolution or coord.y >= params.resolution) {
+		return
+	}
+	sign : f32 = if ((coord.x + coord.y) % 2 == 0) 1 else -1
+	dxdz := spectrumA.readVec2(coord).scale sign
+	dydxz := spectrumB.readVec2(coord).scale sign
+	dyxdyz := spectrumC.readVec2(coord).scale sign
+	dxxdzz := spectrumD.readVec2(coord).scale sign
+	jacobian := (1 + params.lambda.x * dxxdzz.x) * (1 + params.lambda.y * dxxdzz.y) - params.lambda.x * params.lambda.y * dydxz.y * dydxz.y
+	previousFoam := heightFoamOut.readVec2(coord).y
+	foam := previousFoam * exp(-params.foamDecayRate * params.deltaTime)
+	foamSource := clamp01((params.foamThreshold - (jacobian + params.foamBias)) * params.foamAdd)
+	foam = clamp01(foam + foamSource)
+	displacementOut.writeVec2(coord, (params.lambda.x * dxdz.x, params.lambda.y * dxdz.y))
+	heightFoamOut.writeVec2(coord, (dydxz.x, foam))
+	slopeX := dyxdyz.x / max(0.001, 1 + params.lambda.x * dxxdzz.x)
+	slopeZ := dyxdyz.y / max(0.001, 1 + params.lambda.y * dxxdzz.y)
+	slopeOut.writeVec2(coord, (slopeX, slopeZ))
+}
