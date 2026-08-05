@@ -1,6 +1,7 @@
 cu :: import "cuda.blub"
 gl :: import "gl.blub"
 sg :: gl.sg
+ui :: import "ui.blub"
 
 using import "math.blub"
 
@@ -76,7 +77,7 @@ Surfaces :: struct {
 			slope = ocean.slope.resource.mapSurface(),
 		)
 	}
-	
+
 	unmap :: fn(self: ^Self) {
 		self.initial.destroy()
 		self.horizontalDisplacement.destroy()
@@ -319,12 +320,14 @@ cleanup :: fn() {
 
 vs := "
 #version 410
-layout(location = 0) in vec3 position;
-layout(location = 1) in vec2 uv0;
+uniform vec4 mvp[4];
+
+layout(location = 0) in vec2 position;
 layout(location = 0) out vec2 uv;
 void main() {
-    gl_Position = vec4(position, 1.);
-    uv = uv0;
+    vec4 pos = vec4(2. * position - 1., 0., 1.);
+    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * pos;
+    uv = position;
 }\x00"
 
 fs := "
@@ -342,34 +345,88 @@ void main() {
 
 startTime : u64 = 0
 
+PlaneRes :: 4
+PlaneFence :: PlaneRes - 1
+indexLength :: 6 (PlaneFence ** 2)
+
 init :: fn() {
 	startupLog("init begin")
 	desc := sg.desc(
-		environment = glueEnv(),
-		logger = (func = log.func)
+	environment = glueEnv(),
+	logger = (func = log.func)
 	)
 	startupLog("calling sg.setup")
 	sg.setup(^desc)
 	startupLog("sg.setup complete")
 
-	verts := [
-        -1.0,  1.0, 0,     0.0, 1.0,
-         1.0,  1.0, 0,     1.0, 1.0,
-         1.0, -1.0, 0,     1.0, 0.0,
-        -1.0, -1.0, 0,     0.0, 0.0,
-    ]
+	# R R+1
+	#  \
+	# 0 1
+	vertIndex :: fn(x: u32, y: u32) -> u32 {
+		return x PlaneRes + y
+	}
 
-	indices := [0, 1, 2, 0, 2, 3]u16
+	using import "memory.blub"
+	# mesh : ^MeshData = malloc @sizeOf MeshData
+	# verts := ^mesh.verts
+	# indices := ^mesh.indices
+	Verts :: [PlaneRes ** 2]vec2
+	verts : ^Verts = malloc @sizeOf Verts
+	Indices :: [indexLength]u32
+	indices : ^Indices = malloc @sizeOf Indices
+	for (x: u32 = 0..<PlaneRes) for (y: u32 = 0..<PlaneRes) {
+		i := (x PlaneRes) + y
+		verts^[i] = (@numCast(x, f32) / PlaneFence, @numCast(y, f32) / PlaneFence)
+		printFloat(verts^[i].x)
+		print(", ")
+		printFloat(verts^[i].y)
+		println("")
+	}
+	println "finished verts"
+
+	print_u32 6 PlaneFence ** 2
+	println " tris indices"
+	for (x: u32 = 0 ..< PlaneFence) for (y: u32 = 0 ..< PlaneFence) {
+	  triIndex := 6 ((x PlaneFence) + y)
+	  vert := vertIndex(x, y)
+	  print("Tri index: ")
+	  print_u32(triIndex)
+	  print("\nVert index: ")
+	  print_u32 vert
+	  println("")
+
+	  indices^[triIndex]     = vert + PlaneRes
+	  indices^[triIndex + 1] = vert
+	  indices^[triIndex + 2] = vert + 1
+
+	  indices^[triIndex + 3] = vert + PlaneRes
+	  indices^[triIndex + 4] = vert + 1
+	  indices^[triIndex + 5] = vert + PlaneRes + 1
+	}
+	println "finished geometry init"
+	for (x := indices^[]) {
+		print_u32(x)
+		println ""
+	}
+
+	println("verts")
+	i := 0
+	for (v := verts^[]) {
+		v.print()
+	}
+
 
 	vertBufferDesc := sg.buffer_desc(
-		data = sg.range(^verts, @type(verts).size),
+		data = sg.range(verts, @sizeOf @type verts),
 		label = c"vertex-buf",
 	)
+
 	indexBufferDesc := sg.buffer_desc(
-		data = sg.range(^indices, @type(indices).size),
+		data = sg.range(indices, @sizeOf @type indices),
 		usage = (index_buffer = true),
 		label = c"index-buf",
 	)
+
 	vertBuffer := sg.make_buffer(^vertBufferDesc)
 	indexBuffer := sg.make_buffer(^indexBufferDesc)
 	startupLog("buffers created")
@@ -395,10 +452,6 @@ init :: fn() {
 		base_type = .FLOAT,
 		glsl_name = c"position"
 	)
-	shader.attrs[1] = (
-		base_type = .FLOAT,
-		glsl_name = c"uv0"
-	)
 	shader.views[0].texture = (
 		stage = .FRAGMENT,
 		sample_type = .UNFILTERABLE_FLOAT,
@@ -413,22 +466,34 @@ init :: fn() {
 		sampler_slot = 0,
 		glsl_name = c"ocean_tex"
 	)
+	shader.uniform_blocks[0] = (
+	    stage = .VERTEX,
+	    size = @sizeOf mat4,
+	)
+	shader.uniform_blocks[0].glsl_uniforms[0] = (
+	    type = .FLOAT4,
+	    array_count = 4,
+	    glsl_name = c"mvp"
+	)
+
+	println("Making shader")
+	fullShader := sg.make_shader(^shader)
+	println("Made shader")
 
 	pipelineDesc := sg.pipeline_desc(
-		shader = sg.make_shader(^shader),
-		# cull_mode = .BACK,
+		shader = fullShader,
+		cull_mode = .BACK,
 		depth = (
 			write_enabled = true,
 			compare = .LESS_EQUAL,
 		),
-		index_type = .UINT16,
+		index_type = .UINT32,
 	)
 	print("Shader creation: ")
 	sg.query_shader_state(pipelineDesc.shader).print()
 	println("")
 
-	pipelineDesc.layout.attrs[0].format = .FLOAT3
-	pipelineDesc.layout.attrs[1].format = .FLOAT2
+	pipelineDesc.layout.attrs[0].format = .FLOAT2
 
 	startupLog("creating pipeline")
 	state.pip = sg.make_pipeline(^pipelineDesc)
@@ -452,6 +517,9 @@ init :: fn() {
 	time.setup()
 	startTime = time.now()
 	startupLog("init complete")
+
+	free verts
+	free indices
 }
 
 prevTime := 0.
@@ -476,7 +544,7 @@ frame :: fn() {
 	}
 
 	# colors
-	red := sin 2. seconds
+	red := sin(2 seconds)
 	state.passAction.colors[0].clear_value.r = red red
 
 	# rendering
@@ -485,9 +553,31 @@ frame :: fn() {
     sg.apply_pipeline(state.pip)
     sg.apply_bindings(^state.bind)
 
-    sg.draw(0, 6, 1)
-    sg.end_pass()
-    sg.commit()
+
+	# camera
+	w := app.widthf()
+	h := app.heightf()
+	aspect := w/h
+	rotation := quat.geographic(state.latitude, state.longitude)
+	rotMat := rotation.toMatrix()
+	translationAmount := RotateV3Q(movement, rotation.inverse())
+	# translationAmount.print()
+	translationAmount = MulV3F(translationAmount, deltaTime)
+
+	state.position = AddV3(state.position, translationAmount)
+
+	proj := Perspective(1. / 6., aspect, 0.01, 100)
+
+	camera := Translate(MulV3F(state.position, -1))
+
+	mvp := proj rotMat camera
+
+	uniformRange := sg.range(^mvp, @sizeOf @type(mvp))
+	sg.apply_uniforms(0, ^uniformRange)
+
+  sg.draw(0, indexLength, 1)
+  sg.end_pass()
+  sg.commit()
 
 	prevTime = seconds
 }

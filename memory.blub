@@ -1,0 +1,2 @@
+malloc :: fn "malloc"(size: usize) -> ^void
+free :: fn "free"(ptr: ^void)

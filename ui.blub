@@ -1,0 +1,304 @@
+@cInclude("microui/src/blub_microui.c")
+
+Clip :: enum(s32) {
+	Part = 1
+	All
+}
+
+CommandType :: enum(s32) {
+	Jump = 1
+	Clip
+	Rect
+	Text
+	Icon
+	Max
+}
+
+ColorRole :: enum(s32) {
+	Text
+	Border
+	WindowBG
+	TitleBG
+	TitleText
+	PanelBG
+	Button
+	ButtonHover
+	ButtonFocus
+	Base
+	BaseHover
+	BaseFocus
+	ScrollBase
+	ScrollThumb
+	Max
+}
+
+Icon :: enum(s32) {
+	Close = 1
+	Check
+	Collapsed
+	Expanded
+	Max
+}
+
+Result :: enum(s32) {
+	Active = 1
+	Submit = 2
+	Change = 4
+}
+
+Option :: enum(s32) {
+	AlignCenter = 1
+	AlignRight = 2
+	NoInteract = 4
+	NoFrame = 8
+	NoResize = 16
+	NoScroll = 32
+	NoClose = 64
+	NoTitle = 128
+	HoldFocus = 256
+	AutoSize = 512
+	Popup = 1024
+	Closed = 2048
+	Expanded = 4096
+}
+
+MouseButton :: enum(s32) {
+	Left = 1
+	Right = 2
+	Middle = 4
+}
+
+Key :: enum(s32) {
+	Shift = 1
+	Ctrl = 2
+	Alt = 4
+	Backspace = 8
+	Return = 16
+}
+
+Id :: u32
+Real :: f32
+Font :: ^void
+Context :: opaque
+
+TextWidthCallback :: fn(font: Font, text: ^u8, length: s32) -> s32
+TextHeightCallback :: fn(font: Font) -> s32
+
+Vec2 :: struct {
+	x: s32
+	y: s32
+}
+
+Rect :: struct {
+	x: s32
+	y: s32
+	w: s32
+	h: s32
+}
+
+Color :: struct {
+	r: u8
+	g: u8
+	b: u8
+	a: u8
+}
+
+PoolItem :: struct {
+	id: Id
+	lastUpdate: s32
+}
+
+BaseCommand :: struct {
+	type: CommandType
+	size: s32
+}
+
+JumpCommand :: struct {
+	base: BaseCommand
+	destination: ^void
+}
+
+ClipCommand :: struct {
+	base: BaseCommand
+	rect: Rect
+}
+
+RectCommand :: struct {
+	base: BaseCommand
+	rect: Rect
+	color: Color
+}
+
+TextCommand :: struct {
+	base: BaseCommand
+	font: Font
+	position: Vec2
+	color: Color
+	text: [1]u8
+}
+
+IconCommand :: struct {
+	base: BaseCommand
+	rect: Rect
+	id: s32
+	color: Color
+}
+
+Command :: union {
+	type: CommandType
+	base: BaseCommand
+	jump: JumpCommand
+	clip: ClipCommand
+	rect: RectCommand
+	text: TextCommand
+	icon: IconCommand
+}
+
+Layout :: struct {
+	body: Rect
+	next: Rect
+	position: Vec2
+	size: Vec2
+	max: Vec2
+	widths: [16]s32
+	items: s32
+	itemIndex: s32
+	nextRow: s32
+	nextType: s32
+	indent: s32
+}
+
+Container :: struct {
+	head: ^Command
+	tail: ^Command
+	rect: Rect
+	body: Rect
+	contentSize: Vec2
+	scroll: Vec2
+	zIndex: s32
+	open: s32
+}
+
+Style :: struct {
+	font: Font
+	size: Vec2
+	padding: s32
+	spacing: s32
+	indent: s32
+	titleHeight: s32
+	scrollbarSize: s32
+	thumbSize: s32
+	colors: [14]Color
+}
+
+vec2 :: fn "mu_vec2"(x: s32, y: s32) -> Vec2
+rect :: fn "mu_rect"(x: s32, y: s32, width: s32, height: s32) -> Rect
+color :: fn "mu_color"(red: s32, green: s32, blue: s32, alpha: s32) -> Color
+
+createContext :: fn "mu_blub_create_context"() -> ^Context
+destroyContext :: fn "mu_blub_destroy_context"(context: ^Context)
+setTextCallbacks :: fn "mu_blub_set_text_callbacks"(
+	context: ^Context,
+	textWidth: @type(TextWidthCallback),
+	textHeight: @type(TextHeightCallback),
+)
+style :: fn "mu_blub_style"(context: ^Context) -> ^Style
+
+init :: fn "mu_init"(context: ^Context)
+begin :: fn "mu_begin"(context: ^Context)
+end :: fn "mu_end"(context: ^Context)
+setFocus :: fn "mu_set_focus"(context: ^Context, id: Id)
+getId :: fn "mu_get_id"(context: ^Context, data: ^void, size: s32) -> Id
+pushId :: fn "mu_push_id"(context: ^Context, data: ^void, size: s32)
+popId :: fn "mu_pop_id"(context: ^Context)
+pushClipRect :: fn "mu_push_clip_rect"(context: ^Context, clip: Rect)
+popClipRect :: fn "mu_pop_clip_rect"(context: ^Context)
+getClipRect :: fn "mu_get_clip_rect"(context: ^Context) -> Rect
+checkClip :: fn "mu_check_clip"(context: ^Context, candidate: Rect) -> Clip
+getCurrentContainer :: fn "mu_get_current_container"(context: ^Context) -> ^Container
+getContainer :: fn "mu_get_container"(context: ^Context, name: ^u8) -> ^Container
+bringToFront :: fn "mu_bring_to_front"(context: ^Context, container: ^Container)
+
+poolInit :: fn "mu_pool_init"(context: ^Context, items: [^]PoolItem, length: s32, id: Id) -> s32
+poolGet :: fn "mu_pool_get"(context: ^Context, items: [^]PoolItem, length: s32, id: Id) -> s32
+poolUpdate :: fn "mu_pool_update"(context: ^Context, items: [^]PoolItem, index: s32)
+
+inputMouseMove :: fn "mu_input_mousemove"(context: ^Context, x: s32, y: s32)
+inputMouseDown :: fn "mu_input_mousedown"(context: ^Context, x: s32, y: s32, button: s32)
+inputMouseUp :: fn "mu_input_mouseup"(context: ^Context, x: s32, y: s32, button: s32)
+inputScroll :: fn "mu_input_scroll"(context: ^Context, x: s32, y: s32)
+inputKeyDown :: fn "mu_input_keydown"(context: ^Context, key: s32)
+inputKeyUp :: fn "mu_input_keyup"(context: ^Context, key: s32)
+inputText :: fn "mu_input_text"(context: ^Context, text: ^u8)
+
+pushCommand :: fn "mu_push_command"(context: ^Context, type: CommandType, size: s32) -> ^Command
+nextCommand :: fn "mu_next_command"(context: ^Context, command: ^^Command) -> s32
+setClip :: fn "mu_set_clip"(context: ^Context, clip: Rect)
+drawRect :: fn "mu_draw_rect"(context: ^Context, destination: Rect, color: Color)
+drawBox :: fn "mu_draw_box"(context: ^Context, destination: Rect, color: Color)
+drawText :: fn "mu_draw_text"(context: ^Context, font: Font, text: ^u8, length: s32, position: Vec2, color: Color)
+drawIcon :: fn "mu_draw_icon"(context: ^Context, id: s32, destination: Rect, color: Color)
+
+layoutRow :: fn "mu_layout_row"(context: ^Context, items: s32, widths: [^]s32, height: s32)
+layoutWidth :: fn "mu_layout_width"(context: ^Context, width: s32)
+layoutHeight :: fn "mu_layout_height"(context: ^Context, height: s32)
+layoutBeginColumn :: fn "mu_layout_begin_column"(context: ^Context)
+layoutEndColumn :: fn "mu_layout_end_column"(context: ^Context)
+layoutSetNext :: fn "mu_layout_set_next"(context: ^Context, destination: Rect, relative: s32)
+layoutNext :: fn "mu_layout_next"(context: ^Context) -> Rect
+
+drawControlFrame :: fn "mu_draw_control_frame"(context: ^Context, id: Id, destination: Rect, colorRole: s32, options: s32)
+drawControlText :: fn "mu_draw_control_text"(context: ^Context, text: ^u8, destination: Rect, colorRole: s32, options: s32)
+mouseOver :: fn "mu_mouse_over"(context: ^Context, destination: Rect) -> s32
+updateControl :: fn "mu_update_control"(context: ^Context, id: Id, destination: Rect, options: s32)
+
+text :: fn "mu_text"(context: ^Context, value: ^u8)
+label :: fn "mu_label"(context: ^Context, value: ^u8)
+buttonEx :: fn "mu_button_ex"(context: ^Context, label: ^u8, icon: s32, options: s32) -> Result
+checkbox :: fn "mu_checkbox"(context: ^Context, label: ^u8, state: ^s32) -> Result
+textboxRaw :: fn "mu_textbox_raw"(context: ^Context, buffer: [^]u8, bufferSize: s32, id: Id, destination: Rect, options: s32) -> Result
+textboxEx :: fn "mu_textbox_ex"(context: ^Context, buffer: [^]u8, bufferSize: s32, options: s32) -> Result
+sliderEx :: fn "mu_slider_ex"(context: ^Context, value: ^Real, low: Real, high: Real, step: Real, format: ^u8, options: s32) -> Result
+numberEx :: fn "mu_number_ex"(context: ^Context, value: ^Real, step: Real, format: ^u8, options: s32) -> Result
+headerEx :: fn "mu_header_ex"(context: ^Context, label: ^u8, options: s32) -> Result
+beginTreeNodeEx :: fn "mu_begin_treenode_ex"(context: ^Context, label: ^u8, options: s32) -> Result
+endTreeNode :: fn "mu_end_treenode"(context: ^Context)
+beginWindowEx :: fn "mu_begin_window_ex"(context: ^Context, title: ^u8, destination: Rect, options: s32) -> Result
+endWindow :: fn "mu_end_window"(context: ^Context)
+openPopup :: fn "mu_open_popup"(context: ^Context, name: ^u8)
+beginPopup :: fn "mu_begin_popup"(context: ^Context, name: ^u8) -> Result
+endPopup :: fn "mu_end_popup"(context: ^Context)
+beginPanelEx :: fn "mu_begin_panel_ex"(context: ^Context, name: ^u8, options: s32)
+endPanel :: fn "mu_end_panel"(context: ^Context)
+
+button :: fn(context: ^Context, caption: ^u8) -> Result {
+	return buttonEx(context, caption, 0, 1)
+}
+
+textbox :: fn(context: ^Context, buffer: [^]u8, bufferSize: s32) -> Result {
+	return textboxEx(context, buffer, bufferSize, 0)
+}
+
+slider :: fn(context: ^Context, value: ^Real, low: Real, high: Real) -> Result {
+	return sliderEx(context, value, low, high, 0, c"%.2f", 1)
+}
+
+number :: fn(context: ^Context, value: ^Real, step: Real) -> Result {
+	return numberEx(context, value, step, c"%.2f", 1)
+}
+
+header :: fn(context: ^Context, caption: ^u8) -> Result {
+	return headerEx(context, caption, 0)
+}
+
+beginTreeNode :: fn(context: ^Context, caption: ^u8) -> Result {
+	return beginTreeNodeEx(context, caption, 0)
+}
+
+beginWindow :: fn(context: ^Context, title: ^u8, destination: Rect) -> Result {
+	return beginWindowEx(context, title, destination, 0)
+}
+
+beginPanel :: fn(context: ^Context, name: ^u8) {
+	beginPanelEx(context, name, 0)
+}

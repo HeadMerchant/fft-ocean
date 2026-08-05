@@ -27,7 +27,17 @@ quat :: @align(16) struct {
 
 @cDefine("HANDMADE_MATH_NO_SIMD")
 @cDefine("HANDMADE_MATH_USE_TURNS")
-using @cImport("cdeps/hmm.h", "HMM_", HMM_Vec2=vec2, HMM_Vec3=vec3, HMM_Mat4=mat4, HMM_Quat=quat, HMM_Vec4=vec4)
+using @cImport(
+	"HandmadeMath/HandmadeMath.h",
+	"HMM_",
+	HMM_Vec2=vec2,
+	HMM_Vec3=vec3,
+	HMM_Mat4=mat4,
+	HMM_Quat=quat,
+	HMM_Vec4=vec4,
+	HMM_Bool=s32
+)
+Perspective :: Perspective_RH_NO
 fmt :: import "fmt.blub"
 
 quat impl {
@@ -73,6 +83,17 @@ vec3 impl {
 		printFloat self.z
 		print ": "
 		printFloat self.dot(self)
+		println ""
+	}
+}
+
+vec2 impl {
+	dot :: DotV2
+	print :: fn(self: Self) {
+		using fmt
+		printFloat self.x
+		print ", "
+		printFloat self.y
 		println ""
 	}
 }

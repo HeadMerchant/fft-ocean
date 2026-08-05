@@ -51,7 +51,7 @@ Surface impl {
 	) -> SurfaceLoad2
 
 	load2 :: fn(self: Self, x: u32, y: u32) -> SurfaceLoad2 {
-		return self.surfaceLoad2Raw(x * SurfaceLoad2.size, y)
+		return self.surfaceLoad2Raw(x @sizeOf SurfaceLoad2, y)
 	}
 
 	write :: fn(self: Self, coord: PixelCoord, val: vec4) {

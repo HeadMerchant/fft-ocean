@@ -1,3 +1,12 @@
 [submodule "sokol"]
 	path = sokol
 	url = https://github.com/floooh/sokol
+[submodule "microui"]
+	path = microui
+	url = https://github.com/rxi/microui/
+[submodule "nuklear"]
+	path = nuklear
+	url = https://github.com/immediate-mode-ui/nuklear
+[submodule "HandmadeMath"]
+	path = HandmadeMath
+	url = https://github.com/HandmadeMath/HandmadeMath/
