@@ -25,7 +25,18 @@ CudaTexture :: struct {
 	create :: fn() -> Self {
 		# TODO: initialize multiple at once?
 		texture := gl.Texture2d.create(1, .Rg32f, OceanResolution, OceanResolution)
-		return (texture = texture, resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore))
+		return (
+			texture = texture,
+			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
+		)
+	}
+
+	createRgba :: fn() -> Self {
+		texture := gl.Texture2d.create(1, .Rgba32f, OceanResolution, OceanResolution)
+		return (
+			texture = texture,
+			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
+		)
 	}
 	# destroy :: fn(self: ^Self) {
 	# 	self.resource.unregister()
@@ -47,8 +58,7 @@ OceanCudaState :: struct {
 	spectrumB: CudaTexture
 	spectrumC: CudaTexture
 	spectrumD: CudaTexture
-	displacement: CudaTexture
-	heightFoam: CudaTexture
+	displacementFoam: CudaTexture
 	slope: CudaTexture
 	initialized: bool
 }
@@ -61,8 +71,7 @@ Surfaces :: struct {
 	spectrumB: cu.Surface
 	spectrumC: cu.Surface
 	spectrumD: cu.Surface
-	displacement: cu.Surface
-	heightFoam: cu.Surface
+	displacementFoam: cu.Surface
 	slope: cu.Surface
 } impl {
 	map :: fn() -> Self {
@@ -72,8 +81,7 @@ Surfaces :: struct {
 			spectrumB = ocean.spectrumB.resource.mapSurface(),
 			spectrumC = ocean.spectrumC.resource.mapSurface(),
 			spectrumD = ocean.spectrumD.resource.mapSurface(),
-			displacement = ocean.displacement.resource.mapSurface(),
-			heightFoam = ocean.heightFoam.resource.mapSurface(),
+			displacementFoam = ocean.displacementFoam.resource.mapSurface(),
 			slope = ocean.slope.resource.mapSurface(),
 		)
 	}
@@ -84,16 +92,14 @@ Surfaces :: struct {
 		self.spectrumB.destroy()
 		self.spectrumC.destroy()
 		self.spectrumD.destroy()
-		self.displacement.destroy()
-		self.heightFoam.destroy()
+		self.displacementFoam.destroy()
 		self.slope.destroy()
 		ocean.initial.resource.unmap()
 		ocean.horizontalDisplacement.resource.unmap()
 		ocean.spectrumB.resource.unmap()
 		ocean.spectrumC.resource.unmap()
 		ocean.spectrumD.resource.unmap()
-		ocean.displacement.resource.unmap()
-		ocean.heightFoam.resource.unmap()
+		ocean.displacementFoam.resource.unmap()
 		ocean.slope.resource.unmap()
 	}
 }
@@ -131,8 +137,7 @@ setupOceanTextures :: fn() {
 	ocean.spectrumB = CudaTexture.create()
 	ocean.spectrumC = CudaTexture.create()
 	ocean.spectrumD = CudaTexture.create()
-	ocean.displacement = CudaTexture.create()
-	ocean.heightFoam = CudaTexture.create()
+	ocean.displacementFoam = CudaTexture.createRgba()
 	ocean.slope = CudaTexture.create()
 	sg.reset_state_cache()
 	imageDesc := sg.image_desc(
@@ -141,9 +146,9 @@ setupOceanTextures :: fn() {
 		height = OceanResolution,
 		num_slices = 1,
 		num_mipmaps = 1,
-		pixel_format = .RG32F,
+		pixel_format = .RGBA32F,
 		sample_count = 1,
-		gl_textures = [ocean.heightFoam.texture.id, 0],
+		gl_textures = [ocean.displacementFoam.texture.id, 0],
 		gl_texture_target = cu.GlTexture2d,
 		label = c"ocean-image"
 	)
@@ -260,8 +265,7 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 		^surfaces.spectrumB,
 		^surfaces.spectrumC,
 		^surfaces.spectrumD,
-		^surfaces.displacement,
-		^surfaces.heightFoam,
+		^surfaces.displacementFoam,
 		^surfaces.slope,
 	]^void
 	ocean.assembleMaps.launch(assembleArgs[^], oceanGrid(), oceanBlock(), 0)
@@ -321,13 +325,16 @@ cleanup :: fn() {
 vs := "
 #version 410
 uniform vec4 mvp[4];
+uniform sampler2D displacement;
 
 layout(location = 0) in vec2 position;
 layout(location = 0) out vec2 uv;
 void main() {
-    vec4 pos = vec4(2. * position - 1., 0., 1.);
-    gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * pos;
-    uv = position;
+  vec4 pos = vec4(2. * position - 1., 0., 1.);
+	vec3 displacement = texture(displacement, position).rgb;
+	pos.xyz += 0.003 * displacement;
+  gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * pos;
+  uv = position;
 }\x00"
 
 fs := "
@@ -336,24 +343,21 @@ uniform sampler2D ocean_tex;
 layout(location = 0) out vec4 frag_color;
 layout(location = 0) in vec2 uv;
 void main() {
-    vec2 ocean = texture(ocean_tex, uv).rg;
-    float height = ocean.r;
-    float foam = ocean.g;
-	// frag_color = vec4(vec3(height * 6.0 + 0.5 + foam), 1.0);
-	frag_color = vec4(height, foam, 0.0, 1.0);
+  vec4 ocean = texture(ocean_tex, uv);
+	frag_color = vec4(ocean.rgb, 1.0);
 }\x00"
 
 startTime : u64 = 0
 
-PlaneRes :: 4
+PlaneRes :: 256
 PlaneFence :: PlaneRes - 1
 indexLength :: 6 (PlaneFence ** 2)
 
 init :: fn() {
 	startupLog("init begin")
 	desc := sg.desc(
-	environment = glueEnv(),
-	logger = (func = log.func)
+		environment = glueEnv(),
+		logger = (func = log.func)
 	)
 	startupLog("calling sg.setup")
 	sg.setup(^desc)
@@ -377,24 +381,18 @@ init :: fn() {
 	for (x: u32 = 0..<PlaneRes) for (y: u32 = 0..<PlaneRes) {
 		i := (x PlaneRes) + y
 		verts^[i] = (@numCast(x, f32) / PlaneFence, @numCast(y, f32) / PlaneFence)
-		printFloat(verts^[i].x)
-		print(", ")
-		printFloat(verts^[i].y)
-		println("")
+		# printFloat(verts^[i].x)
+		# print(", ")
+		# printFloat(verts^[i].y)
+		# println("")
 	}
-	println "finished verts"
+	# println "finished verts"
 
-	print_u32 6 PlaneFence ** 2
-	println " tris indices"
+	# print_u32 6 PlaneFence ** 2
+	# println " tris indices"
 	for (x: u32 = 0 ..< PlaneFence) for (y: u32 = 0 ..< PlaneFence) {
 	  triIndex := 6 ((x PlaneFence) + y)
 	  vert := vertIndex(x, y)
-	  print("Tri index: ")
-	  print_u32(triIndex)
-	  print("\nVert index: ")
-	  print_u32 vert
-	  println("")
-
 	  indices^[triIndex]     = vert + PlaneRes
 	  indices^[triIndex + 1] = vert
 	  indices^[triIndex + 2] = vert + 1
@@ -403,26 +401,16 @@ init :: fn() {
 	  indices^[triIndex + 4] = vert + 1
 	  indices^[triIndex + 5] = vert + PlaneRes + 1
 	}
+
 	println "finished geometry init"
-	for (x := indices^[]) {
-		print_u32(x)
-		println ""
-	}
-
-	println("verts")
-	i := 0
-	for (v := verts^[]) {
-		v.print()
-	}
-
 
 	vertBufferDesc := sg.buffer_desc(
-		data = sg.range(verts, @sizeOf @type verts),
+		data = sg.range(verts, @sizeOf Verts),
 		label = c"vertex-buf",
 	)
 
 	indexBufferDesc := sg.buffer_desc(
-		data = sg.range(indices, @sizeOf @type indices),
+		data = sg.range(indices, @sizeOf Indices),
 		usage = (index_buffer = true),
 		label = c"index-buf",
 	)
@@ -448,11 +436,26 @@ init :: fn() {
 		),
 		label = c"triangle_shader"
 	)
+
 	shader.attrs[0] = (
 		base_type = .FLOAT,
 		glsl_name = c"position"
 	)
 	shader.views[0].texture = (
+		stage = .FRAGMENT,
+		sample_type = .UNFILTERABLE_FLOAT,
+	)
+	shader.samplers[0] = (
+		stage = .FRAGMENT,
+		sampler_type = .NONFILTERING,
+	)
+	shader.texture_sampler_pairs[0] = (
+		stage = .FRAGMENT,
+		view_slot = 0,
+		sampler_slot = 0,
+		glsl_name = c"ocean_tex"
+	)
+		shader.views[0].texture = (
 		stage = .FRAGMENT,
 		sample_type = .UNFILTERABLE_FLOAT,
 	)
@@ -544,7 +547,7 @@ frame :: fn() {
 	}
 
 	# colors
-	red := sin(2 seconds)
+	red := sin 2 seconds
 	state.passAction.colors[0].clear_value.r = red red
 
 	# rendering
@@ -561,7 +564,6 @@ frame :: fn() {
 	rotation := quat.geographic(state.latitude, state.longitude)
 	rotMat := rotation.toMatrix()
 	translationAmount := RotateV3Q(movement, rotation.inverse())
-	# translationAmount.print()
 	translationAmount = MulV3F(translationAmount, deltaTime)
 
 	state.position = AddV3(state.position, translationAmount)
@@ -595,9 +597,9 @@ event :: fn(e: ^app.event) {
 		.KEY_DOWN -> input.press(e.key_code, true)
 		.KEY_UP -> input.press(e.key_code, false)
 		.MOUSE_MOVE -> if (input.mouseDown) {
-			dt := deltaTime * .2
-			state.latitude += e.mouse_dx * dt
-			state.longitude += e.mouse_dy * dt
+			dt := deltaTime .2
+			state.latitude += e.mouse_dx dt
+			state.longitude += e.mouse_dy dt
 		}
 	}
 }

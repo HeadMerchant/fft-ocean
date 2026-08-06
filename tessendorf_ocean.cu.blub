@@ -172,10 +172,12 @@ updateSpectrum :: kernel(
 	spectrumD.writeVec2(coord, (displacementXdx.re - displacementZdz.im, displacementXdx.im + displacementZdz.re))
 }
 
-butterflyStep :: fn(step: u32, source: u32, destination: u32, index: u32) {
+butterflyStep :: fn(step: u32, index: u32) {
 	b := Size >> (step + 1)
 	w := b * (index / b)
 	i := (w + index) % Size
+	source := step & 1
+	destination := source ~ 1
 	twiddle := complex.exp(tau * @numCast(w, f32) / @numCast(Size, f32))
 	fftBuffer[destination][index] = fftBuffer[source][i] + twiddle fftBuffer[source][i + b]
 }
@@ -183,24 +185,19 @@ butterflyStep :: fn(step: u32, source: u32, destination: u32, index: u32) {
 fftSurface :: fn(surface: Surface, horizontal: bool) {
 	index := @threadIdxX
 	coord := if (horizontal) PixelCoord(index, @blockIdxY) else PixelCoord(@blockIdxX, index)
+
 	fftBuffer[0][index] = surface.readComplex(coord)
 	barrier()
-	butterflyStep(0, 0, 1, index)
-	barrier()
-	butterflyStep(1, 1, 0, index)
-	barrier()
-	butterflyStep(2, 0, 1, index)
-	barrier()
-	butterflyStep(3, 1, 0, index)
-	barrier()
-	butterflyStep(4, 0, 1, index)
-	barrier()
-	butterflyStep(5, 1, 0, index)
-	barrier()
-	butterflyStep(6, 0, 1, index)
-	barrier()
-	butterflyStep(7, 1, 0, index)
-	barrier()
+
+	stride : u32 = Size
+	step : u32 = 0
+	while (stride > 1) {
+		butterflyStep(step, index)
+		barrier()
+
+		stride = stride >> 1
+		step += 1
+	}
 	surface.writeComplex(coord, fftBuffer[0][index])
 	barrier()
 }
@@ -230,7 +227,6 @@ assembleMaps :: kernel(
 	spectrumC: Surface,
 	spectrumD: Surface,
 	displacementOut: Surface,
-	heightFoamOut: Surface,
 	slopeOut: Surface,
 ) {
 	coord := dispatchCoord()
@@ -243,12 +239,11 @@ assembleMaps :: kernel(
 	dyxdyz := spectrumC.readVec2(coord).scale sign
 	dxxdzz := spectrumD.readVec2(coord).scale sign
 	jacobian := (1 + params.lambda.x * dxxdzz.x) * (1 + params.lambda.y * dxxdzz.y) - params.lambda.x * params.lambda.y * dydxz.y * dydxz.y
-	previousFoam := heightFoamOut.readVec2(coord).y
-	foam := previousFoam * exp(-params.foamDecayRate * params.deltaTime)
+	previousFoam := displacementOut.readVec4(coord).w
+	foam := previousFoam * exp(-params.foamDecayRate params.deltaTime)
 	foamSource := clamp01((params.foamThreshold - (jacobian + params.foamBias)) * params.foamAdd)
 	foam = clamp01(foam + foamSource)
-	displacementOut.writeVec2(coord, (params.lambda.x * dxdz.x, params.lambda.y * dxdz.y))
-	heightFoamOut.writeVec2(coord, (dydxz.x, foam))
+	displacementOut.writeVec4(coord, (params.lambda.x * dxdz.x, params.lambda.y * dxdz.y, dydxz.x, foam))
 	slopeX := dyxdyz.x / max(0.001, 1 + params.lambda.x * dxxdzz.x)
 	slopeZ := dyxdyz.y / max(0.001, 1 + params.lambda.y * dxxdzz.y)
 	slopeOut.writeVec2(coord, (slopeX, slopeZ))
