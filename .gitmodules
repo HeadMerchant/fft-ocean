@@ -10,3 +10,6 @@
 [submodule "HandmadeMath"]
 	path = HandmadeMath
 	url = https://github.com/HandmadeMath/HandmadeMath/
+[submodule "spleen"]
+	path = spleen
+	url = https://github.com/fcambus/spleen

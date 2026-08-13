@@ -1,17 +1,11 @@
 cu :: import "cuda.blub"
+sokol :: import "sokol.blub"
+sg :: sokol.gfx
 gl :: import "gl.blub"
-sg :: gl.sg
-ui :: import "ui.blub"
-
+app :: sokol.app
+time :: sokol.time
+microui :: import "ui.blub"
 using import "math.blub"
-
-app :: @cImport("sokol/sokol_app.h", "sapp_")
-time :: @cImport("sokol/sokol_time.h", "stm_")
-log :: @cImport("sokol/sokol_log.h", "slog_")
-
-@cInclude("sokol/sokol_glue.h")
-glueEnv :: fn "sglue_environment"() -> sg.environment
-swapchain :: fn "sglue_swapchain"() -> sg.swapchain
 using import "fmt.blub"
 kernels :: @cudaImport "tessendorf_ocean.cu.blub"
 
@@ -24,7 +18,7 @@ CudaTexture :: struct {
 } impl {
 	create :: fn() -> Self {
 		# TODO: initialize multiple at once?
-		texture := gl.Texture2d.create(1, .Rg32f, OceanResolution, OceanResolution)
+		texture := gl.Texture2d.create(1, .Rg32f, OceanResolution, OceanResolution, false)
 		return (
 			texture = texture,
 			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
@@ -32,16 +26,12 @@ CudaTexture :: struct {
 	}
 
 	createRgba :: fn() -> Self {
-		texture := gl.Texture2d.create(1, .Rgba32f, OceanResolution, OceanResolution)
+		texture := gl.Texture2d.create(1, .Rgba32f, OceanResolution, OceanResolution, false)
 		return (
 			texture = texture,
 			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
 		)
 	}
-	# destroy :: fn(self: ^Self) {
-	# 	self.resource.unregister()
-	# 	self.texture.destroy()
-	# }
 }
 
 OceanCudaState :: struct {
@@ -290,7 +280,8 @@ state : struct {
 	position: vec3
 	latitude: f32
 	longitude: f32
-} = (position = (0, 0, 0.5))
+	bg: microui.Color
+} = (position = (0, 0, 0.5), bg = (a = 255))
 
 Input :: struct {
 	mousePos: vec2
@@ -356,8 +347,8 @@ indexLength :: 6 (PlaneFence ** 2)
 init :: fn() {
 	startupLog("init begin")
 	desc := sg.desc(
-		environment = glueEnv(),
-		logger = (func = log.func)
+		environment = sokol.glue.environment(),
+		logger = (func = sokol.log.func)
 	)
 	startupLog("calling sg.setup")
 	sg.setup(^desc)
@@ -523,7 +514,14 @@ init :: fn() {
 
 	free verts
 	free indices
+
+	# UI
+	startupLog "Initializing UI"
+	ui = microui.Context.create()
+	startupLog "UI creation finished"
 }
+
+ui: ^microui.Context
 
 prevTime := 0.
 deltaTime := 0.
@@ -532,6 +530,43 @@ frame :: fn() {
 	if (!startupFrameLogged) {
 		startupLog("first frame begin")
 	}
+
+	ui.begin()
+	println "Window"
+	ui.beginWindow(c"Simulation Params", (0, 0, 300, 240))
+	println "Header"
+
+	if (ui.headerEx(c"Background Color", @raw microui.Option.Expanded) != microui.Result.Inactive) {
+		cols := [-78, -1]
+		ui.layoutRow(2, cols[^], 74)
+
+		println "Slider layout"
+		ui.layoutBeginColumn()
+		{
+			cols = [46, -1]
+	    ui.layoutRow(2, cols[^], 0)
+
+			ui.label(c"Red:")
+			ui.sliderU8(^state.bg.r)
+
+	    ui.label(c"Green:")
+			ui.sliderU8(^state.bg.g)
+
+	    ui.label(c"Blue:")
+			ui.sliderU8(^state.bg.b)
+		}
+	  ui.layoutEndColumn()
+
+		# Color preview
+		rect := ui.layoutNext()
+		ui.drawRect(rect, state.bg)
+		println "Drew rect"
+	}
+
+
+	ui.endWindow()
+	ui.end()
+
 	seconds : f32 = @numCast(time.sec(time.since(startTime)))
 	deltaTime = seconds - prevTime
 	movement := vec3(
@@ -547,15 +582,13 @@ frame :: fn() {
 	}
 
 	# colors
-	red := sin 2 seconds
-	state.passAction.colors[0].clear_value.r = red red
+	state.passAction.colors[0].clear_value = state.bg.toFloat()
 
 	# rendering
-	pass := sg.pass(action = state.passAction, swapchain = swapchain())
+	pass := sg.pass(action = state.passAction, swapchain = sokol.glue.swapchain())
 	sg.begin_pass(^pass)
-    sg.apply_pipeline(state.pip)
-    sg.apply_bindings(^state.bind)
-
+  sg.apply_pipeline(state.pip)
+  sg.apply_bindings(^state.bind)
 
 	# camera
 	w := app.widthf()
@@ -578,6 +611,7 @@ frame :: fn() {
 	sg.apply_uniforms(0, ^uniformRange)
 
   sg.draw(0, indexLength, 1)
+	ui.render(w, h)
   sg.end_pass()
   sg.commit()
 
@@ -588,19 +622,32 @@ event :: fn(e: ^app.event) {
 	when (e.type) {
 		.MOUSE_DOWN -> {
 			println("mouse down")
+	    ui.inputMouseDown(
+				@numCast(e.mouse_x),
+				@numCast(e.mouse_y),
+				1 << @raw e.mouse_button
+			)
 			input.mouseDown = true
 		}
 		.MOUSE_UP -> {
 			println("mouse up")
+	    ui.inputMouseUp(
+				@numCast(e.mouse_x),
+				@numCast(e.mouse_y),
+				1 << @raw e.mouse_button
+			)
 			input.mouseDown = false
 		}
 		.KEY_DOWN -> input.press(e.key_code, true)
 		.KEY_UP -> input.press(e.key_code, false)
-		.MOUSE_MOVE -> if (input.mouseDown) {
-			dt := deltaTime .2
-			state.latitude += e.mouse_dx dt
-			state.longitude += e.mouse_dy dt
-		}
+		.MOUSE_MOVE -> {
+      ui.inputMouseMove(@numCast(e.mouse_x), @numCast(e.mouse_y))
+			if (input.mouseDown) {
+				dt := deltaTime .2
+				state.latitude += e.mouse_dx dt
+				state.longitude += e.mouse_dy dt
+			}
+		} 
 	}
 }
 

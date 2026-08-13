@@ -1,27 +1,17 @@
-@cIncludeDir("sokol")
-@link("GL")
-@link("X11")
-@link("Xi")
-@link("Xcursor")
-@link("dl")
-@link("pthread")
-@link("m")
-@cDefine("SOKOL_IMPL")
-@cDefine("SOKOL_GLCORE")
-@cDefine("SOKOL_LOG_IMPL")
-sg :: @cImport("sokol/sokol_gfx.h", "sg_")
-
 TextureTarget :: enum(u32) {
 	Texture2D = 0x0DE1
 }
 TextureInternalFormat :: enum(u32) {
+	R8 = 0x8229
 	Rgba8 = 0x8058
 	Rgba32f = 0x8814
 	Rg32f = 0x8230
 }
+
 TextureFormat :: enum(u32) {
 	Rgba = 0x1908
 }
+
 TextureDataType :: enum(u32) {
 	Float = 0x1406
 }
@@ -30,6 +20,10 @@ TextureParameter :: enum(u32) {
 	MagFilter = 0x2800
 	WrapS = 0x2802
 	WrapT = 0x2803
+	SwizzleR = 0x8E42
+	SwizzleG = 0x8E43
+	SwizzleB = 0x8E44
+	SwizzleA = 0x8E45
 }
 TextureFilter :: enum(u32) {
 	Nearest = 0x2600
@@ -39,27 +33,43 @@ TextureWrap :: enum(u32) {
 	ClampToEdge = 0x812F
 }
 
+setTextureParameter :: fn "glTexParameteri"(
+	target: TextureTarget,
+	param: TextureParameter,
+	value: s32,
+)
+
 Texture2d :: struct {
 	id: u32
 } impl {
 	texture2dTarget    :: 0x0DE1
 	textureNearest     :: 0x2600
 	textureClampToEdge :: 0x812F
+	channelRed         :: 0x1903
+	channelGreen       :: 0x1904
+	channelBlue        :: 0x1905
+	channelAlpha       :: 0x1906
 
 	create :: fn(
 		levels: s32,
 		internalFormat: TextureInternalFormat,
 		width: s32,
-		height: s32
+		height: s32,
+		swizzleRed: bool,
 	) -> Self {
 		self: Self
 		(fn "glGenTextures"(count: s32, textures: ^Self))(1, ^self)
 		self.bind()
-		set :: fn "glTexParameteri"(target: TextureTarget, param: TextureParameter, value: s32)
-		set(.Texture2D, .MinFilter, Self.textureNearest)
-		set(.Texture2D, .MagFilter, Self.textureNearest)
-		set(.Texture2D, .WrapS, Self.textureClampToEdge)
-		set(.Texture2D, .WrapT, Self.textureClampToEdge)
+		setTextureParameter(.Texture2D, .MinFilter, Self.textureNearest)
+		setTextureParameter(.Texture2D, .MagFilter, Self.textureNearest)
+		setTextureParameter(.Texture2D, .WrapS, Self.textureClampToEdge)
+		setTextureParameter(.Texture2D, .WrapT, Self.textureClampToEdge)
+		if (swizzleRed) {
+			setTextureParameter(.Texture2D, .SwizzleR, 1)
+			setTextureParameter(.Texture2D, .SwizzleG, 1)
+			setTextureParameter(.Texture2D, .SwizzleB, 1)
+			setTextureParameter(.Texture2D, .SwizzleA, Self.channelRed)
+		}
 		(fn "glTexStorage2D"(
 			target: TextureTarget,
 			levels: s32,
@@ -75,30 +85,51 @@ Texture2d :: struct {
 		(fn "glBindTexture"(target: TextureTarget, texture: Self))(.Texture2D, self)
 	}
 
+	swizzleRedToAlpha :: fn(self: Self) {
+		self.bind()
+		setTextureParameter(.Texture2D, .SwizzleR, 1)
+		setTextureParameter(.Texture2D, .SwizzleG, 1)
+		setTextureParameter(.Texture2D, .SwizzleB, 1)
+		setTextureParameter(.Texture2D, .SwizzleA, Self.channelRed)
+		Self(0).bind()
+	}
+
+	loadDataR8 :: fn(self: Self, width: s32, height: s32, data: [^]u8) {
+		self.bind()
+		UnpackAlignment :: 0x0CF5
+		UnsignedByte :: 0x1401
+		(fn "glPixelStorei"(param: s32, val: s32))(UnpackAlignment, 1)
+		(fn "glTexSubImage2D"(
+      target: TextureTarget,
+      level: s32,
+      xOffset: s32,
+      yOffset: s32,
+      width: s32,
+      height: s32,
+      format: s32,
+      type: s32,
+      data: ^void
+    ))(
+      .Texture2D,
+      0,
+      0,
+      0,
+      width,
+      height,
+      Self.channelRed,
+      UnsignedByte,
+      ^data[0]
+    )
+		Self(0).bind()
+	}
+
 	destroy :: fn(self: Self) {
 		texture := self
 		(fn "glDeleteTextures"(count: s32, textures: ^Self))(1, ^texture)
 	}
-
-
-	
 }
 
-
-# texImage2D :: fn "glTexImage2D"(
-# 	target: TextureTarget,
-# 	level: s32,
-# 	internalFormat: TextureInternalFormat,
-# 	width: s32,
-# 	height: s32,
-# 	border: s32,
-# 	format: TextureFormat,
-# 	type: TextureDataType,
-# 	data: ^void
-# )
-
-# deleteTextures :: fn "glDeleteTextures"(count: s32, textures: ^u32)
-
+sg :: import "sokol.blub".gfx
 lookupBuffer :: fn "_sg_lookup_buffer"(id: u32) -> ^struct {
 	slot: struct {
 		id: u32
