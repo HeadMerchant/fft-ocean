@@ -1,6 +1,20 @@
 TextureTarget :: enum(u32) {
 	Texture2D = 0x0DE1
 }
+
+logDriver :: fn() {
+	getString :: fn "glGetString"(name: u32) -> ^u8
+	puts :: fn "puts"(text: ^u8) -> s32
+	Vendor :: 0x1F00
+	Renderer :: 0x1F01
+	Version :: 0x1F02
+	puts(c"[startup] OpenGL vendor:")
+	puts(getString(Vendor))
+	puts(c"[startup] OpenGL renderer:")
+	puts(getString(Renderer))
+	puts(c"[startup] OpenGL version:")
+	puts(getString(Version))
+}
 TextureInternalFormat :: enum(u32) {
 	R8 = 0x8229
 	Rgba8 = 0x8058

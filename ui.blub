@@ -1,4 +1,4 @@
-@cInclude("microui/src/blub_microui.c")
+@cInclude("blub_microui.c")
 using import "math.blub"
 fmt :: import "fmt.blub"
 sg :: import "sokol.blub".gfx
@@ -63,27 +63,26 @@ Icon :: enum(s32) {
 }
 
 # TODO: flags
-Result :: enum(s32) {
-	Inactive = 0
-	Active = 1
-	Submit = 2
-	Change = 4
+Result :: flag(u32) {
+	Active
+	Submit
+	Change
 }
 
-Option :: enum(s32) {
-	AlignCenter = 1
-	AlignRight = 2
-	NoInteract = 4
-	NoFrame = 8
-	NoResize = 16
-	NoScroll = 32
-	NoClose = 64
-	NoTitle = 128
-	HoldFocus = 256
-	AutoSize = 512
-	Popup = 1024
-	Closed = 2048
-	Expanded = 4096
+Option :: flag(s32) {
+	AlignCenter
+	AlignRight
+	NoInteract
+	NoFrame
+	NoResize
+	NoScroll
+	NoClose
+	NoTitle
+	HoldFocus
+	AutoSize
+	Popup
+	Closed
+	Expanded
 }
 
 MouseButton :: enum(s32) {
@@ -355,7 +354,7 @@ Context impl {
     gl.ortho(0, width, height, 0, -1, 1)
     gl.begin_quads()
 
-		cmd: ^Command
+	cmd: ^Command
     while (self.nextCommand(^cmd) != 0) {when (cmd.type) {
 			.Text -> drawText(cmd.text.text[^], cmd.text.position, cmd.text.color)
 			.Rect -> pushQuad(cmd.rect.rect, (0, 0, GlyphWidth, GlyphHeight), cmd.rect.color)
@@ -365,12 +364,12 @@ Context impl {
 				rect.x = rect.x + (rect.w - GlyphWidth) / 2
 				rect.y = rect.y + (rect.h - GlyphHeight) / 2
 
-				char: u8 = when (cmd.icon.id) {
-					.Close -> 'X'
-					.Check -> 'V'
-					.Collapsed -> 'v'
-					.Expanded -> '^'
-				}
+				# char: u8 = when (cmd.icon.id) {
+				# 	.Close -> 'X'
+				# 	.Check -> 'V'
+				# 	.Collapsed -> 'v'
+				# 	.Expanded -> '^'
+				# }
 				char: u8 = 'x'
 
 				pushQuad(rect, glyphRect(char), cmd.icon.color)
@@ -429,28 +428,28 @@ Context impl {
 	layoutSetNext :: fn "mu_layout_set_next"(self: ^Self, destination: Rect, relative: s32)
 	layoutNext :: fn "mu_layout_next"(self: ^Self) -> Rect
 
-	drawControlFrame :: fn "mu_draw_control_frame"(self: ^Self, id: Id, destination: Rect, colorRole: s32, options: s32)
-	drawControlText :: fn "mu_draw_control_text"(self: ^Self, text: ^u8, destination: Rect, colorRole: s32, options: s32)
+	drawControlFrame :: fn "mu_draw_control_frame"(self: ^Self, id: Id, destination: Rect, colorRole: s32, options: Option)
+	drawControlText :: fn "mu_draw_control_text"(self: ^Self, text: ^u8, destination: Rect, colorRole: s32, options: Option)
 	mouseOver :: fn "mu_mouse_over"(self: ^Self, destination: Rect) -> s32
-	updateControl :: fn "mu_update_control"(self: ^Self, id: Id, destination: Rect, options: s32)
+	updateControl :: fn "mu_update_control"(self: ^Self, id: Id, destination: Rect, options: Option)
 
 	text :: fn "mu_text"(self: ^Self, value: ^u8)
 	label :: fn "mu_label"(self: ^Self, value: ^u8)
-	buttonEx :: fn "mu_button_ex"(self: ^Self, label: ^u8, icon: s32, options: s32) -> Result
+	buttonEx :: fn "mu_button_ex"(self: ^Self, label: ^u8, icon: s32, options: Option) -> Result
 	checkbox :: fn "mu_checkbox"(self: ^Self, label: ^u8, state: ^s32) -> Result
-	textboxRaw :: fn "mu_textbox_raw"(self: ^Self, buffer: [^]u8, bufferSize: s32, id: Id, destination: Rect, options: s32) -> Result
-	textboxEx :: fn "mu_textbox_ex"(self: ^Self, buffer: [^]u8, bufferSize: s32, options: s32) -> Result
-	numberEx :: fn "mu_number_ex"(self: ^Self, value: ^Real, step: Real, format: ^u8, options: s32) -> Result
-	headerEx :: fn "mu_header_ex"(self: ^Self, label: ^u8, options: s32) -> Result
-	beginTreeNodeEx :: fn "mu_begin_treenode_ex"(self: ^Self, label: ^u8, options: s32) -> Result
+	textboxRaw :: fn "mu_textbox_raw"(self: ^Self, buffer: [^]u8, bufferSize: s32, id: Id, destination: Rect, options: Option) -> Result
+	textboxEx :: fn "mu_textbox_ex"(self: ^Self, buffer: [^]u8, bufferSize: s32, options: Option) -> Result
+	numberEx :: fn "mu_number_ex"(self: ^Self, value: ^Real, step: Real, format: ^u8, options: Option) -> Result
+	headerEx :: fn "mu_header_ex"(self: ^Self, label: ^u8, options: Option) -> Result
+	beginTreeNodeEx :: fn "mu_begin_treenode_ex"(self: ^Self, label: ^u8, options: Option) -> Result
 	sliderEx :: fn "mu_slider_ex"( ctx: ^Self, value: ^Real, low: Real, high: Real, step: Real, fmt: ^u8, opt: s32) -> Result
 	endTreeNode :: fn "mu_end_treenode"(self: ^Self)
-	beginWindowEx :: fn "mu_begin_window_ex"(self: ^Self, title: ^u8, destination: Rect, options: s32) -> Result
+	beginWindowEx :: fn "mu_begin_window_ex"(self: ^Self, title: ^u8, destination: Rect, options: Option) -> Result
 	endWindow :: fn "mu_end_window"(self: ^Self)
 	openPopup :: fn "mu_open_popup"(self: ^Self, name: ^u8)
 	beginPopup :: fn "mu_begin_popup"(self: ^Self, name: ^u8) -> Result
 	endPopup :: fn "mu_end_popup"(self: ^Self)
-	beginPanelEx :: fn "mu_begin_panel_ex"(self: ^Self, name: ^u8, options: s32)
+	beginPanelEx :: fn "mu_begin_panel_ex"(self: ^Self, name: ^u8, options: Option)
 	endPanel :: fn "mu_end_panel"(self: ^Self)
 
 	button :: fn(self: ^Self, caption: ^u8) -> Result {
@@ -462,7 +461,8 @@ Context impl {
 	}
 
 	slider :: fn(self: ^Self, value: ^Real, low: Real, high: Real) -> Result {
-		return self.sliderEx(
+		self.pushPtrId(value)
+		result := self.sliderEx(
 			value,
 			low,
 			high,
@@ -470,15 +470,21 @@ Context impl {
 			c"%.2f",
 			1
 		)
+		self.popId()
+		return result
+	}
+
+	pushPtrId :: fn(self: ^Self, ptr: ^void) {
+		self.pushId(^ptr, @sizeOf ^void)
 	}
 
 	sliderU8 :: fn(self: ^Self, value: ^u8) -> Result {
 		tmp: f32 = @numCast(value^)
-		self.pushId(value, @sizeOf @type value)
+		self.pushPtrId(value)
 		res := self.sliderEx(^tmp, 0, 255, 1, c"%.0f", @raw Option.AlignCenter)
 		value^ = @numCast(tmp)
 		self.popId()
-    return res
+	    return res
 	}
 
 	number :: fn(self: ^Self, value: ^Real, step: Real) -> Result {
@@ -499,6 +505,10 @@ Context impl {
 
 	beginPanel :: fn(self: ^Self, name: ^u8) {
 		self.beginPanelEx(name, 0)
+	}
+
+	mouseCaptured :: fn(self: ^Self) -> bool {
+		return (fn "mu_blub_mouse_captured"(self: ^Self) -> s32)(self) != 0
 	}
 }
 

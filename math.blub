@@ -25,8 +25,9 @@ quat :: @align(16) struct {
 	w: f32
 }
 
-@cDefine("HANDMADE_MATH_NO_SIMD")
-@cDefine("HANDMADE_MATH_USE_TURNS")
+@cDefine("HANDMADE_MATH_NO_SIMD", "HANDMADE_MATH_USE_TURNS")
+# TODO: fix import chains for undefines
+@cInclude("undef.h") 
 using @cImport(
 	"HandmadeMath/HandmadeMath.h",
 	"HMM_",

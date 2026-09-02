@@ -33,17 +33,19 @@ OceanParams :: struct {
 	foamThreshold: f32
 }
 
+params : OceanParams
+
 @shared fftBuffer : [2][256]complex
 barrier :: fn "llvm.nvvm.barrier0"()
 
-dispersion :: fn(params: OceanParams, k: f32) -> f32 {
+dispersion :: fn(k: f32) -> f32 {
 	return sqrt(gravity * k * tanh(min(k * params.depth, 20)))
 }
 
-dispersionDerivative :: fn(params: OceanParams, k: f32) -> f32 {
+dispersionDerivative :: fn(k: f32) -> f32 {
 	th := tanh(min(k * params.depth, 20))
 	ch := cosh(k * params.depth)
-	return gravity * (params.depth * k / ch / ch + th) / dispersion(params, k) / 2
+	return gravity * (params.depth * k / ch / ch + th) / dispersion(k) / 2
 }
 
 normalizationFactor :: fn(s: f32) -> f32 {
@@ -63,7 +65,7 @@ spreadPower :: fn(omega: f32, peakOmega: f32) -> f32 {
 	return if (omega > peakOmega) 9.77 * pow(ratio, -2.5) else 6.97 * pow(ratio, 5)
 }
 
-directionSpectrum :: fn(params: OceanParams, theta: f32, omega: f32) -> f32 {
+directionSpectrum :: fn(theta: f32, omega: f32) -> f32 {
 	spectrum := params.jonswap
 	s := spreadPower(omega, spectrum.peakOmega) + 16 * tanh(min(omega / spectrum.peakOmega, 20)) * spectrum.swell * spectrum.swell
 	a := 2 / pi * cos(theta) * cos(theta)
@@ -71,14 +73,14 @@ directionSpectrum :: fn(params: OceanParams, theta: f32, omega: f32) -> f32 {
 	return lerp(a, b, spectrum.spreadBlend)
 }
 
-tmaCorrection :: fn(params: OceanParams, omega: f32) -> f32 {
+tmaCorrection :: fn(omega: f32) -> f32 {
 	omegaH := omega * sqrt(params.depth / gravity)
 	return if (omegaH <= 1) 0.5 * omegaH * omegaH
 		else if (omegaH < 2) 1 - 0.5 * (2 - omegaH) * (2 - omegaH)
 		else 1
 }
 
-jonswapSpectrum :: fn(params: OceanParams, omega: f32) -> f32 {
+jonswapSpectrum :: fn(omega: f32) -> f32 {
 	spectrum := params.jonswap
 	sigma := if (omega <= spectrum.peakOmega) 0.07 else 0.09
 	difference := omega - spectrum.peakOmega
@@ -87,10 +89,10 @@ jonswapSpectrum :: fn(params: OceanParams, omega: f32) -> f32 {
 	peakRatio := spectrum.peakOmega / omega
 	omegaPower := oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega * oneOverOmega
 	peakShape := exp(-1.25 * peakRatio * peakRatio * peakRatio * peakRatio)
-	return spectrum.scale * tmaCorrection(params, omega) * spectrum.alpha * gravity * gravity * omegaPower * peakShape * pow(abs(spectrum.gamma), r)
+	return spectrum.scale * tmaCorrection(omega) * spectrum.alpha * gravity * gravity * omegaPower * peakShape * pow(abs(spectrum.gamma), r)
 }
 
-shortWaveFade :: fn(params: OceanParams, k: f32) -> f32 {
+shortWaveFade :: fn(k: f32) -> f32 {
 	fade := params.jonswap.shortWavesFade
 	return exp(-fade * fade * k * k)
 }
@@ -103,38 +105,37 @@ dispatchCoord :: fn() -> PixelCoord {
 }
 
 initializeSpectrum :: kernel(
-	params: OceanParams,
 	initial: Surface,
 ) {
-	coord := dispatchCoord()
-	if (coord.x >= params.resolution or coord.y >= params.resolution) {
-		return
-	}
-	halfN := @numCast(params.resolution, f32) * 0.5
-	deltaK := tau / params.lengthScale
-	k := vec2(
-		(@numCast(coord.x, f32) - halfN) * deltaK,
-		(@numCast(coord.y, f32) - halfN) * deltaK,
-	)
-	kLength := k.length()
-	value := vec2(0, 0)
-	if (params.lowCutoff <= kLength) {
-		if (kLength <= params.highCutoff) {
-			seed := coord.x + params.resolution * coord.y + params.resolution + params.seed
-			gauss1 := gaussianPair(seed)
-			gauss2 := gaussianPair(seed + 2)
-			omega := dispersion(params, kLength)
-			dOmegaDk := dispersionDerivative(params, kLength)
-			energy := jonswapSpectrum(params, omega) * directionSpectrum(params, atan2(k.y, k.x), omega) * shortWaveFade(params, kLength)
-			amplitude := sqrt(2 * energy * abs(dOmegaDk) / kLength * deltaK * deltaK)
-			value = (gauss2.x * amplitude, gauss1.y * amplitude)
-		}
-	}
-	initial.writeVec2(coord, value)
+	return
+	# coord := dispatchCoord()
+	# if (coord.x >= params.resolution or coord.y >= params.resolution) {
+	# 	return
+	# }
+	# halfN := @numCast(params.resolution, f32) * 0.5
+	# deltaK := tau / params.lengthScale
+	# k := vec2(
+	# 	(@numCast(coord.x, f32) - halfN) * deltaK,
+	# 	(@numCast(coord.y, f32) - halfN) * deltaK,
+	# )
+	# kLength := k.length()
+	# value := vec2(0, 0)
+	# if (params.lowCutoff <= kLength) {
+	# 	if (kLength <= params.highCutoff) {
+	# 		seed := coord.x + params.resolution * coord.y + params.resolution + params.seed
+	# 		gauss1 := gaussianPair(seed)
+	# 		gauss2 := gaussianPair(seed + 2)
+	# 		omega := dispersion(kLength)
+	# 		dOmegaDk := dispersionDerivative(kLength)
+	# 		energy := jonswapSpectrum(omega) * directionSpectrum(atan2(k.y, k.x), omega) * shortWaveFade(kLength)
+	# 		amplitude := sqrt(2 * energy * abs(dOmegaDk) / kLength * deltaK * deltaK)
+	# 		value = (gauss2.x * amplitude, gauss1.y * amplitude)
+	# 	}
+	# }
+	# initial.writeVec2(coord, value)
 }
 
 updateSpectrum :: kernel(
-	params: OceanParams,
 	initial: Surface,
 	spectrumA: Surface,
 	spectrumB: Surface,
@@ -221,7 +222,6 @@ clamp01 :: fn(value: f32) -> f32 {
 }
 
 assembleMaps :: kernel(
-	params: OceanParams,
 	spectrumA: Surface,
 	spectrumB: Surface,
 	spectrumC: Surface,

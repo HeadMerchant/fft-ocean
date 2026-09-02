@@ -34,7 +34,7 @@ CudaTexture :: struct {
 	}
 }
 
-OceanCudaState :: struct {
+ocean : struct {
 	device: cu.Device
 	module: cu.Module
 	initializeSpectrum: cu.Kernel
@@ -50,10 +50,37 @@ OceanCudaState :: struct {
 	spectrumD: CudaTexture
 	displacementFoam: CudaTexture
 	slope: CudaTexture
+	moduleLoaded: bool
 	initialized: bool
-}
-
-ocean : OceanCudaState
+} = (
+	params = (
+		resolution = @numCast(OceanResolution, u32),
+		lengthScale = 256,
+		frameTime = 0,
+		deltaTime = 0,
+		repeatTime = 200,
+		depth = 200,
+		lowCutoff = 0.001,
+		highCutoff = 1000,
+		seed = 1,
+		jonswap = (
+			scale = 1,
+			angle = 0,
+			spreadBlend = 0.7,
+			swell = 0.5,
+			alpha = 0.0081,
+			peakOmega = 0.8,
+			gamma = 3.3,
+			shortWavesFade = 0.08,
+		),
+		lambda = (1.25, 1.25),
+		foamBias = 1,
+		foamDecayRate = 0.02,
+		foamAdd = 0.5,
+		foamThreshold = 0.1,
+		
+	)
+)
 
 Surfaces :: struct {
 	initial: cu.Surface
@@ -165,72 +192,49 @@ setupOceanTextures :: fn() {
 
 }
 
-setupOceanCuda :: fn() {
-	if (ocean.initialized) {
-		startupLog("cuda setup skipped")
-		return
-	}
-
-	startupLog("cuda setup begin")
-	ocean.params = kernels.OceanParams(
-		resolution = @numCast(OceanResolution, u32),
-		lengthScale = 256,
-		frameTime = 0,
-		deltaTime = 0,
-		repeatTime = 200,
-		depth = 200,
-		lowCutoff = 0.001,
-		highCutoff = 1000,
-		seed = 1,
-		jonswap = (
-			scale = 1,
-			angle = 0,
-			spreadBlend = 0.7,
-			swell = 0.5,
-			alpha = 0.0081,
-			peakOmega = 0.8,
-			gamma = 3.3,
-			shortWavesFade = 0.08,
-		),
-		lambda = (1.25, 1.25),
-		foamBias = 1,
-		foamDecayRate = 0.02,
-		foamAdd = 0.5,
-		foamThreshold = 0.1,
-	)
-	startupLog("cuda params ready")
-
-	startupLog("cuda module init")
-	module := ocean.device.init(@cudaPtx kernels)
-	ocean.module = module
-	startupLog("cuda module loaded")
-	startupLog("load kernel initializeSpectrum")
-	ocean.initializeSpectrum = module.loadKernel(kernels.initializeSpectrum)
-	ocean.updateSpectrum = module.loadKernel(kernels.updateSpectrum)
-	ocean.horizontalFft = module.loadKernel(kernels.horizontalFft)
-	ocean.verticalFft = module.loadKernel(kernels.verticalFft)
-	ocean.assembleMaps = module.loadKernel(kernels.assembleMaps)
-	startupLog("cuda kernels loaded")
+initSpectrum :: fn() {
 	startupLog("launch initializeSpectrum")
 	surfaces := Surfaces.map()
 	args := [
-		^ocean.params,
 		^surfaces.initial,
-		# ^surfaces.displacement,
-		# ^surfaces.heightFoam,
-		# ^surfaces.slope,
 	]^void
+	fmt.print("Surface id: ")
+	fmt.print_s32(@numCast(surfaces.initial.id))
+	fmt.println("")
+	startupLog("arged")
 	ocean.initializeSpectrum.launch(args[^], oceanGrid(), oceanBlock(), 0)
+	startupLog("launched")
 	cu.sync().log()
+	startupLog("synced")
 	surfaces.unmap()
 	ocean.initialized = true
 	startupLog("cuda setup complete")
+}
+
+# CUDA-GL interop requires a CUDA context before registering GL textures.
+# The GL context already exists when Sokol invokes init.
+setupCudaModule :: fn() {
+	if (ocean.moduleLoaded) {
+		return
+	}
+	startupLog("cuda module init")
+	ocean.module = ocean.device.init(@cudaPtx kernels)
+	startupLog("cuda module loaded")
+	startupLog("load kernel initializeSpectrum")
+	ocean.initializeSpectrum = ocean.module.loadKernel(kernels.initializeSpectrum)
+	ocean.updateSpectrum = ocean.module.loadKernel(kernels.updateSpectrum)
+	ocean.horizontalFft = ocean.module.loadKernel(kernels.horizontalFft)
+	ocean.verticalFft = ocean.module.loadKernel(kernels.verticalFft)
+	ocean.assembleMaps = ocean.module.loadKernel(kernels.assembleMaps)
+	ocean.moduleLoaded = true
+	startupLog("cuda kernels loaded")
 }
 
 updateOcean :: fn(frameTime: f32, dt: f32) {
 	ocean.params.frameTime = frameTime
 	ocean.params.deltaTime = dt
 	surfaces := Surfaces.map()
+
 	# TODO: constant memory
 	updateArgs := [
 		^ocean.params,
@@ -265,7 +269,7 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 
 sg.resource_state impl {
 	print :: fn(self: Self) {
-		print(@name self)
+		print(@name(self))
 	}
 }
 
@@ -353,6 +357,7 @@ init :: fn() {
 	startupLog("calling sg.setup")
 	sg.setup(^desc)
 	startupLog("sg.setup complete")
+	gl.logDriver()
 
 	# R R+1
 	#  \
@@ -506,17 +511,7 @@ init :: fn() {
 	startupLog("creating ocean texture")
 	setupOceanTextures()
 	startupLog("starting cuda setup")
-	setupOceanCuda()
-	startupLog("starting time setup")
-	time.setup()
-	startTime = time.now()
-	startupLog("init complete")
-
-	free verts
-	free indices
-
-	# UI
-	startupLog "Initializing UI"
+	initSpectrum()
 	ui = microui.Context.create()
 	startupLog "UI creation finished"
 }
@@ -532,11 +527,9 @@ frame :: fn() {
 	}
 
 	ui.begin()
-	println "Window"
 	ui.beginWindow(c"Simulation Params", (0, 0, 300, 240))
-	println "Header"
 
-	if (ui.headerEx(c"Background Color", @raw microui.Option.Expanded) != microui.Result.Inactive) {
+	if (ui.headerEx(c"Background Color", .Expanded)) {
 		cols := [-78, -1]
 		ui.layoutRow(2, cols[^], 74)
 
@@ -544,18 +537,18 @@ frame :: fn() {
 		ui.layoutBeginColumn()
 		{
 			cols = [46, -1]
-	    ui.layoutRow(2, cols[^], 0)
+		    ui.layoutRow(2, cols[^], 0)
 
 			ui.label(c"Red:")
 			ui.sliderU8(^state.bg.r)
 
-	    ui.label(c"Green:")
+		    ui.label(c"Green:")
 			ui.sliderU8(^state.bg.g)
 
-	    ui.label(c"Blue:")
+		    ui.label(c"Blue:")
 			ui.sliderU8(^state.bg.b)
 		}
-	  ui.layoutEndColumn()
+		ui.layoutEndColumn()
 
 		# Color preview
 		rect := ui.layoutNext()
@@ -563,6 +556,44 @@ frame :: fn() {
 		println "Drew rect"
 	}
 
+	if (ui.headerEx(c"Spectrum Params", .Expanded)) {
+		cols := [-78, -1]
+		ui.layoutRow(2, cols[^], 74)
+
+		changed := false
+		ui.layoutBeginColumn()
+		{
+			cols = [46, -1]
+			ui.layoutRow(2, cols[^], 0)
+
+			ui.label(c"Scale:")
+			result := ui.slider(^ocean.params.jonswap.scale, 0, 1)
+			ui.label(c"angle")
+			result |= ui.slider(^ocean.params.jonswap.angle, 0, 1)
+			ui.label(c"spreadBlend")
+			result |= ui.slider(^ocean.params.jonswap.spreadBlend, 0, 1)
+			ui.label(c"swell")
+			result |= ui.slider(^ocean.params.jonswap.swell, 0, 1)
+			ui.label(c"Alpha")
+			result |= ui.slider(^ocean.params.jonswap.alpha, 0, 1)
+			ui.label(c"Peak Omegae")
+			result |= ui.slider(^ocean.params.jonswap.peakOmega, 0, 1)
+			ui.label(c"gamma")
+			result |= ui.slider(^ocean.params.jonswap.gamma, 0, 1)
+			ui.label(c"Short Waves Fade")
+			result |= ui.slider(^ocean.params.jonswap.shortWavesFade, 0, 1)
+
+			if (result & .Change) {
+				# TODO: re-generate initial spectrum
+			}
+		}
+		ui.layoutEndColumn()
+
+		# Color preview
+		rect := ui.layoutNext()
+		ui.drawRect(rect, state.bg)
+		println "Drew rect"
+	}
 
 	ui.endWindow()
 	ui.end()
@@ -622,16 +653,16 @@ event :: fn(e: ^app.event) {
 	when (e.type) {
 		.MOUSE_DOWN -> {
 			println("mouse down")
-	    ui.inputMouseDown(
+		    ui.inputMouseDown(
 				@numCast(e.mouse_x),
 				@numCast(e.mouse_y),
 				1 << @raw e.mouse_button
 			)
-			input.mouseDown = true
+			if (!ui.mouseCaptured()) input.mouseDown = true
 		}
 		.MOUSE_UP -> {
 			println("mouse up")
-	    ui.inputMouseUp(
+		    ui.inputMouseUp(
 				@numCast(e.mouse_x),
 				@numCast(e.mouse_y),
 				1 << @raw e.mouse_button

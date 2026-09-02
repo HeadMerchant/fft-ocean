@@ -43,6 +43,7 @@ Error :: enum(s32) {
 	NvlinkUncorrectable
 	JitCompilerNotFound
 	IllegalAddress = 700
+	Unknown = 999
 } impl {
 	log :: fn(self: Self) {
 		if (self == .Success) {
@@ -118,6 +119,12 @@ DevicePointer :: struct {
 }
 
 setDevice :: fn "cudaSetDevice"(device: s32) -> Error
+getGlDevices :: fn "cudaGLGetDevices"(
+	deviceCount: ^u32,
+	devices: ^s32,
+	maxDevices: u32,
+	deviceList: u32,
+) -> Error
 plan2d :: fn "cufftPlan2d"(plan: ^fftHandle, cols: s32, rows: s32, type: fftType) -> fftResult
 destroyPlan :: fn "cufftDestroy"(plan: fftHandle) -> fftResult
 execC2R :: fn "cufftExecC2R"(plan: fftHandle, input: DevicePointer, output: DevicePointer) -> fftResult
@@ -342,8 +349,21 @@ Device impl {
 		using fmt
 		println("Initializing CUDA")
 		(fn "cuInit"(flags: u32) -> Error)(0).log()
-		println("Initializing CUDA runtime primary context")
-		setDevice(0).log()
+		println("Getting CUDA device for current OpenGL context")
+		glDeviceCount: u32
+		glDevice: s32
+		# cudaGLDeviceListAll. CUDA-GL interop must use this device, not
+		# necessarily CUDA device 0.
+		getGlDevices(^glDeviceCount, ^glDevice, 1, 1).log()
+		print("CUDA devices backing current OpenGL context: ")
+		print_u32(glDeviceCount)
+		println("")
+		if (glDeviceCount == 0) {
+			println("No CUDA device backs the current OpenGL context")
+			@crash
+		}
+		println("Initializing CUDA runtime primary context for OpenGL device")
+		setDevice(glDevice).log()
 		# println("Getting CUDA device")
 		# (fn "cuDeviceGet"(device: ^Self, ordinal: u32) -> Error)(self, 0).log()
 		context : Context
