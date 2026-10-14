@@ -41,7 +41,7 @@ using @cImport(
 Perspective :: Perspective_RH_NO
 fmt :: import "fmt.blub"
 
-quat impl {
+quatMethods :: quat impl {
 	print :: fn(self: Self) {
 		using fmt
 		println("QUATERNION")
@@ -52,17 +52,18 @@ quat impl {
 	}
 	multiply :: MulQ
 	inverse :: InvQ
-	geographic :: fn(latitude: f32, longitude: f32) -> quat {
-		lat := cas(latitude / 2.)
-		lon := cas(longitude / 2.)
-		# TODO: r-value methods
-		return quat(0, lat.y, 0, lat.x) quat(lon.y, 0, 0, lon.x)
+
+	geographic :: fn(yaw: f32, pitch: f32) -> quat {
+		yawQ := quat(0, sin(yaw / 2), 0, cos(yaw / 2))
+		pitchQ := quat(sin(pitch / 2), 0, 0, cos(pitch / 2))
+		return yawQ pitchQ
 	}
+
 	dot :: DotQ
 	toMatrix :: QToM4
 }
 
-mat4 impl {
+mat4Methods :: mat4 impl {
 	multiply :: MulM4
 	printPosition :: fn(self: Self) {
 		using fmt
@@ -73,7 +74,7 @@ mat4 impl {
 	}
 }
 
-vec3 impl {
+vec3Methods :: vec3 impl {
 	dot :: DotV3
 	print :: fn(self: Self) {
 		using fmt
@@ -86,9 +87,11 @@ vec3 impl {
 		printFloat self.dot(self)
 		println ""
 	}
+
+	multiply :: MulV3F
 }
 
-vec2 impl {
+vec2Methods :: vec2 impl {
 	dot :: DotV2
 	print :: fn(self: Self) {
 		using fmt

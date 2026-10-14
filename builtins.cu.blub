@@ -30,7 +30,7 @@ SurfaceLoad4 :: struct {
 	a: u32
 }
 
-Surface impl {
+SurfaceMethods :: Surface impl {
 	# NVPTX lowers these intrinsics by scaling X for the element width; just pass texel coordinates here
 	surfaceStore4 :: fn "llvm.nvvm.sust.p.2d.v4i32.trap"(
 		surface: Self,

@@ -1,7 +1,9 @@
 complex :: struct {
 	a: f32
 	b: f32
-} impl {
+}
+
+complexMethods :: complex impl {
 	multiply :: fn(A: Self, B: Self) -> Self {
 		return (
 			A.a B.a - A.b B.b,

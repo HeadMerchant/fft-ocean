@@ -109,7 +109,9 @@ Rect :: struct {
 	y: s32
 	w: s32
 	h: s32
-} impl {
+}
+
+RectMethods :: Rect impl {
 	at :: fn(x: s32, y: s32) -> Self {
 		return (x, y, GlyphWidth, GlyphHeight)
 	}
@@ -238,7 +240,7 @@ pushQuad :: fn(dst: Rect, src: Rect, color: Color) {
 }
 
 drawRect :: fn(rect: Rect, color: Color) {
-  pushQuad(rect, Rect.at(0, 0), color)
+  pushQuad(rect, RectMethods.at(0, 0), color)
 }
 
 glyphRect :: fn(char: u8) -> Rect {
@@ -252,7 +254,7 @@ glyphRect :: fn(char: u8) -> Rect {
 }
 
 drawText :: fn(text: [^]u8, pos: Vec2, color: Color) {
-  dst := Rect.at(pos.x, pos.y)
+	dst := RectMethods.at(pos.x, pos.y)
 	i := 0
 	while (text[i] != 0) {
 		pushQuad(
@@ -271,7 +273,7 @@ setClipRect :: fn(rect: Rect) {
   gl.begin_quads()
 }
 
-Context impl {
+ContextMethods :: Context impl {
   create :: fn() -> ^Self {
 		self := (fn "mu_blub_create_context"() -> ^Self)()
 
@@ -295,7 +297,7 @@ Context impl {
 			textHeight: @type textHeight,
 		))(self, textWidth, textHeight)
 
-		glTexture := rawOpenGl.Texture2d.create(1, .R8, AtlasWidth, AtlasHeight, true)
+		glTexture := rawOpenGl.Texture2dMethods.create(1, .R8, AtlasWidth, AtlasHeight, true)
 		glTexture.loadDataR8(AtlasWidth, AtlasHeight, font.data.data)
 
 		println "resetting cache"
@@ -374,7 +376,12 @@ Context impl {
 
 				pushQuad(rect, glyphRect(char), cmd.icon.color)
 			}
-			.Clip -> fmt.println "TODO: clipping"
+			.Clip -> {
+				gl.end()
+				rect := cmd.clip.rect
+				gl.scissor_rect(rect.x, rect.y, rect.w, rect.h, true)
+				gl.begin_quads()
+			}
 		}}
 
     gl.end()
@@ -467,7 +474,7 @@ Context impl {
 			low,
 			high,
 			0,
-			c"%.2f",
+			c"%.8f",
 			1
 		)
 		self.popId()
@@ -512,7 +519,7 @@ Context impl {
 	}
 }
 
-Color impl {
+ColorMethods :: Color impl {
 	toFloat :: fn(self: Self) -> sg.color {
 		return (
 			@numCast(self.r, f32) / 255,

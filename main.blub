@@ -15,23 +15,31 @@ OceanBlockSize :: 8
 CudaTexture :: struct {
 	texture: gl.Texture2d
 	resource: cu.GraphicsResource
-} impl {
+}
+
+CudaTextureMethods :: CudaTexture impl {
 	create :: fn() -> Self {
 		# TODO: initialize multiple at once?
-		texture := gl.Texture2d.create(1, .Rg32f, OceanResolution, OceanResolution, false)
+		texture := gl.Texture2dMethods.create(1, .Rg32f, OceanResolution, OceanResolution, false)
 		return (
 			texture = texture,
-			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
+			resource = cu.GraphicsResourceMethods.fromTexture(texture, .SurfaceLoadStore)
 		)
 	}
 
 	createRgba :: fn() -> Self {
-		texture := gl.Texture2d.create(1, .Rgba32f, OceanResolution, OceanResolution, false)
+		texture := gl.Texture2dMethods.create(1, .Rgba32f, OceanResolution, OceanResolution, false)
 		return (
 			texture = texture,
-			resource = cu.GraphicsResource.fromTexture(texture, .SurfaceLoadStore)
+			resource = cu.GraphicsResourceMethods.fromTexture(texture, .SurfaceLoadStore)
 		)
 	}
+}
+
+
+Uniforms :: struct {
+	objectToCamera: mat4
+	projection: mat4
 }
 
 ocean : struct {
@@ -52,10 +60,11 @@ ocean : struct {
 	slope: CudaTexture
 	moduleLoaded: bool
 	initialized: bool
+	gpuParams: cu.DevicePointer
 } = (
 	params = (
 		resolution = @numCast(OceanResolution, u32),
-		lengthScale = 256,
+		lengthScale = 128,
 		frameTime = 0,
 		deltaTime = 0,
 		repeatTime = 200,
@@ -73,12 +82,11 @@ ocean : struct {
 			gamma = 3.3,
 			shortWavesFade = 0.08,
 		),
-		lambda = (1.25, 1.25),
-		foamBias = 1,
-		foamDecayRate = 0.02,
+		lambda = (.7, .7),
+		foamBias = -.9,
+		foamDecayRate = 0.4,
 		foamAdd = 0.5,
 		foamThreshold = 0.1,
-		
 	)
 )
 
@@ -90,7 +98,9 @@ Surfaces :: struct {
 	spectrumD: cu.Surface
 	displacementFoam: cu.Surface
 	slope: cu.Surface
-} impl {
+}
+
+SurfacesMethods :: Surfaces impl {
 	map :: fn() -> Self {
 		return (
 			initial = ocean.initial.resource.mapSurface(),
@@ -149,13 +159,13 @@ oceanBlock :: fn() -> cu.Block {
 }
 
 setupOceanTextures :: fn() {
-	ocean.initial = CudaTexture.create()
-	ocean.horizontalDisplacement = CudaTexture.create()
-	ocean.spectrumB = CudaTexture.create()
-	ocean.spectrumC = CudaTexture.create()
-	ocean.spectrumD = CudaTexture.create()
-	ocean.displacementFoam = CudaTexture.createRgba()
-	ocean.slope = CudaTexture.create()
+	ocean.initial = CudaTextureMethods.create()
+	ocean.horizontalDisplacement = CudaTextureMethods.create()
+	ocean.spectrumB = CudaTextureMethods.create()
+	ocean.spectrumC = CudaTextureMethods.create()
+	ocean.spectrumD = CudaTextureMethods.create()
+	ocean.displacementFoam = CudaTextureMethods.createRgba()
+	ocean.slope = CudaTextureMethods.create()
 	sg.reset_state_cache()
 	imageDesc := sg.image_desc(
 		usage = (immutable = true),
@@ -194,10 +204,11 @@ setupOceanTextures :: fn() {
 
 initSpectrum :: fn() {
 	startupLog("launch initializeSpectrum")
-	surfaces := Surfaces.map()
+	surfaces := SurfacesMethods.map()
 	args := [
 		^surfaces.initial,
 	]^void
+	ocean.gpuParams.upload(^ocean.params, @sizeOf @type ocean.params)
 	fmt.print("Surface id: ")
 	fmt.print_s32(@numCast(surfaces.initial.id))
 	fmt.println("")
@@ -222,22 +233,22 @@ setupCudaModule :: fn() {
 	startupLog("cuda module loaded")
 	startupLog("load kernel initializeSpectrum")
 	ocean.initializeSpectrum = ocean.module.loadKernel(kernels.initializeSpectrum)
-	ocean.updateSpectrum = ocean.module.loadKernel(kernels.updateSpectrum)
-	ocean.horizontalFft = ocean.module.loadKernel(kernels.horizontalFft)
-	ocean.verticalFft = ocean.module.loadKernel(kernels.verticalFft)
-	ocean.assembleMaps = ocean.module.loadKernel(kernels.assembleMaps)
-	ocean.moduleLoaded = true
+	ocean.updateSpectrum     = ocean.module.loadKernel(kernels.updateSpectrum)
+	ocean.horizontalFft      = ocean.module.loadKernel(kernels.horizontalFft)
+	ocean.verticalFft        = ocean.module.loadKernel(kernels.verticalFft)
+	ocean.assembleMaps       = ocean.module.loadKernel(kernels.assembleMaps)
+	ocean.moduleLoaded       = true
+	ocean.gpuParams          = ocean.module.getGlobal(kernels.params)
 	startupLog("cuda kernels loaded")
 }
 
 updateOcean :: fn(frameTime: f32, dt: f32) {
 	ocean.params.frameTime = frameTime
 	ocean.params.deltaTime = dt
-	surfaces := Surfaces.map()
+	ocean.gpuParams.upload(^ocean.params, @sizeOf @type ocean.params)
+	surfaces := SurfacesMethods.map()
 
-	# TODO: constant memory
 	updateArgs := [
-		^ocean.params,
 		^surfaces.initial,
 		^surfaces.horizontalDisplacement,
 		^surfaces.spectrumB,
@@ -254,7 +265,6 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 	ocean.horizontalFft.launch(fftArgs[^], (1, OceanResolution, 1), (OceanResolution, 1, 1), 0)
 	ocean.verticalFft.launch(fftArgs[^], (OceanResolution, 1, 1), (OceanResolution, 1, 1), 0)
 	assembleArgs := [
-		^ocean.params,
 		^surfaces.horizontalDisplacement,
 		^surfaces.spectrumB,
 		^surfaces.spectrumC,
@@ -267,7 +277,7 @@ updateOcean :: fn(frameTime: f32, dt: f32) {
 	surfaces.unmap()
 }
 
-sg.resource_state impl {
+SgResourceStateMethods :: sg.resource_state impl {
 	print :: fn(self: Self) {
 		print(@name(self))
 	}
@@ -275,6 +285,7 @@ sg.resource_state impl {
 
 state : struct {
     pip: sg.pipeline
+	skyPipeline: sg.pipeline
     bind: sg.bindings
     passAction: sg.pass_action
 	oceanImage: sg.image
@@ -285,7 +296,7 @@ state : struct {
 	latitude: f32
 	longitude: f32
 	bg: microui.Color
-} = (position = (0, 0, 0.5), bg = (a = 255))
+} = (position = (0, 4, 2), bg = (a = 255))
 
 Input :: struct {
 	mousePos: vec2
@@ -297,7 +308,12 @@ Input :: struct {
 	up: bool
 	down: bool
 	mouseDelta: vec2
-} impl {
+	scroll: f32
+}
+
+input: Input
+
+InputMethods :: Input impl {
 	press :: fn(self: ^Self, keycode: app.keycode, pressed: bool) {
 		when (keycode) {
 			.W -> input.forward
@@ -311,42 +327,54 @@ Input :: struct {
 		} = pressed
 	}
 }
-input := Input()
 
 cleanup :: fn() {
 	sg.shutdown()
 }
-
-vs := "
-#version 410
-uniform vec4 mvp[4];
-uniform sampler2D displacement;
-
-layout(location = 0) in vec2 position;
-layout(location = 0) out vec2 uv;
-void main() {
-  vec4 pos = vec4(2. * position - 1., 0., 1.);
-	vec3 displacement = texture(displacement, position).rgb;
-	pos.xyz += 0.003 * displacement;
-  gl_Position = mat4(mvp[0], mvp[1], mvp[2], mvp[3]) * pos;
-  uv = position;
-}\x00"
-
-fs := "
-#version 410
-uniform sampler2D ocean_tex;
-layout(location = 0) out vec4 frag_color;
-layout(location = 0) in vec2 uv;
-void main() {
-  vec4 ocean = texture(ocean_tex, uv);
-	frag_color = vec4(ocean.rgb, 1.0);
-}\x00"
 
 startTime : u64 = 0
 
 PlaneRes :: 256
 PlaneFence :: PlaneRes - 1
 indexLength :: 6 (PlaneFence ** 2)
+
+FileModule :: import "file.blub"
+File :: FileModule.File
+FileMethods :: FileModule.FileMethods
+Shader :: struct {
+	vs: File
+	fs: File
+
+}
+
+ShaderMethods :: Shader impl {
+	load :: fn(vertPath: ^u8, fragPath: ^u8) -> Self {
+		return (
+			FileMethods.read(vertPath, true),
+			FileMethods.read(fragPath, true)
+		)
+	}
+
+	create :: fn(self: ^Self, desc: sg.shader_desc) -> sg.shader {
+		shader := sg.shader_desc(
+			vertex_func = (
+				source = vs.contents.data,
+				entry = c"main",
+			),
+			fragment_func = (
+				source = fs.contents.data,
+				entry = c"main",
+			),
+			label = c"triangle_shader"
+		)		
+		return sg.make_shader(^shader)
+		# fullShader := 
+		# println("Made shader")
+		# # fs.close()
+		# # vs.close()
+		# return fullShader
+	}
+}
 
 init :: fn() {
 	startupLog("init begin")
@@ -358,6 +386,7 @@ init :: fn() {
 	sg.setup(^desc)
 	startupLog("sg.setup complete")
 	gl.logDriver()
+	time.setup()
 
 	# R R+1
 	#  \
@@ -367,9 +396,6 @@ init :: fn() {
 	}
 
 	using import "memory.blub"
-	# mesh : ^MeshData = malloc @sizeOf MeshData
-	# verts := ^mesh.verts
-	# indices := ^mesh.indices
 	Verts :: [PlaneRes ** 2]vec2
 	verts : ^Verts = malloc @sizeOf Verts
 	Indices :: [indexLength]u32
@@ -377,25 +403,18 @@ init :: fn() {
 	for (x: u32 = 0..<PlaneRes) for (y: u32 = 0..<PlaneRes) {
 		i := (x PlaneRes) + y
 		verts^[i] = (@numCast(x, f32) / PlaneFence, @numCast(y, f32) / PlaneFence)
-		# printFloat(verts^[i].x)
-		# print(", ")
-		# printFloat(verts^[i].y)
-		# println("")
 	}
-	# println "finished verts"
 
-	# print_u32 6 PlaneFence ** 2
-	# println " tris indices"
 	for (x: u32 = 0 ..< PlaneFence) for (y: u32 = 0 ..< PlaneFence) {
 	  triIndex := 6 ((x PlaneFence) + y)
 	  vert := vertIndex(x, y)
-	  indices^[triIndex]     = vert + PlaneRes
-	  indices^[triIndex + 1] = vert
+	  indices^[triIndex]     = vert
+	  indices^[triIndex + 1] = vert + PlaneRes
 	  indices^[triIndex + 2] = vert + 1
 
 	  indices^[triIndex + 3] = vert + PlaneRes
-	  indices^[triIndex + 4] = vert + 1
-	  indices^[triIndex + 5] = vert + PlaneRes + 1
+	  indices^[triIndex + 4] = vert + PlaneRes + 1
+	  indices^[triIndex + 5] = vert + 1
 	}
 
 	println "finished geometry init"
@@ -421,98 +440,71 @@ init :: fn() {
 
 	state.bind.index_buffer = indexBuffer
 
-	shader := sg.shader_desc(
-		vertex_func = (
-			source = ^vs.data[0],
-			entry = c"main",
-		),
-		fragment_func = (
-			source = ^fs.data[0],
-			entry = c"main",
-		),
-		label = c"triangle_shader"
-	)
+	{
+		println "Making ocean pipeline"
+		oceanShader := ShaderMethods.load(c"ocean.vert", c"ocean.frag", (
+			attrs = [(base_type = .FLOAT, glsl_name = c"position")],
+			views = [(texture=(stage = .FRAGMENT, sample_type = .UNFILTERABLE_FLOAT))],
+			samplers = [(stage = .FRAGMENT, sampler_type = .NONFILTERING)],
+			texture_sampler_pairs = [(stage = .FRAGMENT, view_slot = 0, sampler_slot=0, glsl_name = c"ocean_tex")],
+			uniform_blocks = [(
+					stage = .VERTEX,
+					size = @sizeOf mat4,
+					glsl_uniforms = [(
+					    type = .FLOAT4,
+					    array_count = 4,
+					    glsl_name = c"mvp"
+					), (
+						type = .FLOAT4,
+						array_count = 4,
+						glsl_name = c"proj"
+					)]
+				), (stage = .FRAG, size = @sizeOf mat4)]
+		))
 
-	shader.attrs[0] = (
-		base_type = .FLOAT,
-		glsl_name = c"position"
-	)
-	shader.views[0].texture = (
-		stage = .FRAGMENT,
-		sample_type = .UNFILTERABLE_FLOAT,
-	)
-	shader.samplers[0] = (
-		stage = .FRAGMENT,
-		sampler_type = .NONFILTERING,
-	)
-	shader.texture_sampler_pairs[0] = (
-		stage = .FRAGMENT,
-		view_slot = 0,
-		sampler_slot = 0,
-		glsl_name = c"ocean_tex"
-	)
-		shader.views[0].texture = (
-		stage = .FRAGMENT,
-		sample_type = .UNFILTERABLE_FLOAT,
-	)
-	shader.samplers[0] = (
-		stage = .FRAGMENT,
-		sampler_type = .NONFILTERING,
-	)
-	shader.texture_sampler_pairs[0] = (
-		stage = .FRAGMENT,
-		view_slot = 0,
-		sampler_slot = 0,
-		glsl_name = c"ocean_tex"
-	)
-	shader.uniform_blocks[0] = (
-	    stage = .VERTEX,
-	    size = @sizeOf mat4,
-	)
-	shader.uniform_blocks[0].glsl_uniforms[0] = (
-	    type = .FLOAT4,
-	    array_count = 4,
-	    glsl_name = c"mvp"
-	)
+		pipelineDesc := sg.pipeline_desc(
+			shader = oceanShader,
+			cull_mode = .BACK,
+			depth = (
+				write_enabled = true,
+				compare = .LESS_EQUAL,
+			),
+			index_type = .UINT32,
+		)
+		print("Shader creation: ")
+		sg.query_shader_state(pipelineDesc.shader).print()
+		println("")
 
-	println("Making shader")
-	fullShader := sg.make_shader(^shader)
-	println("Made shader")
+		pipelineDesc.layout.attrs[0].format = .FLOAT2
 
-	pipelineDesc := sg.pipeline_desc(
-		shader = fullShader,
-		cull_mode = .BACK,
-		depth = (
-			write_enabled = true,
-			compare = .LESS_EQUAL,
-		),
-		index_type = .UINT32,
-	)
-	print("Shader creation: ")
-	sg.query_shader_state(pipelineDesc.shader).print()
-	println("")
-
-	pipelineDesc.layout.attrs[0].format = .FLOAT2
-
-	startupLog("creating pipeline")
-	state.pip = sg.make_pipeline(^pipelineDesc)
-	if (state.pip.id == 0) {
-		print("Failed to make pipeline")
-	} else {
-		print("Made pipeline")
+		startupLog("creating pipeline")
+		state.pip = sg.make_pipeline(^pipelineDesc)
+		if (state.pip.id == 0) {
+			print("Failed to make pipeline")
+		} else {
+			print("Made pipeline")
+		}
+		println("")
+		print("Pipeline creation: ")
+		sg.query_pipeline_state(state.pip).print()
+		println("")
 	}
-	println("")
+
+	{
+		
+	}
 
 	state.passAction.colors[0] = (
 		load_action = .CLEAR,
 		clear_value = (0, 0, 0, 1)
 	)
 
+	startupLog("starting cuda setup")
+	setupCudaModule()
 	startupLog("creating ocean texture")
 	setupOceanTextures()
-	startupLog("starting cuda setup")
 	initSpectrum()
-	ui = microui.Context.create()
+	ui = microui.ContextMethods.create()
 	startupLog "UI creation finished"
 }
 
@@ -533,7 +525,6 @@ frame :: fn() {
 		cols := [-78, -1]
 		ui.layoutRow(2, cols[^], 74)
 
-		println "Slider layout"
 		ui.layoutBeginColumn()
 		{
 			cols = [46, -1]
@@ -553,46 +544,44 @@ frame :: fn() {
 		# Color preview
 		rect := ui.layoutNext()
 		ui.drawRect(rect, state.bg)
-		println "Drew rect"
 	}
 
 	if (ui.headerEx(c"Spectrum Params", .Expanded)) {
-		cols := [-78, -1]
-		ui.layoutRow(2, cols[^], 74)
-
 		changed := false
 		ui.layoutBeginColumn()
 		{
-			cols = [46, -1]
+			cols := [78, -1]
 			ui.layoutRow(2, cols[^], 0)
 
-			ui.label(c"Scale:")
-			result := ui.slider(^ocean.params.jonswap.scale, 0, 1)
-			ui.label(c"angle")
-			result |= ui.slider(^ocean.params.jonswap.angle, 0, 1)
+			jonswap := ^ocean.params.jonswap
+			ui.label(c"Scale")
+			result := ui.slider(^jonswap.scale, 0, 1)
+			ui.label(c"Wind Angle (turn)")
+			# TODO: angle / 2 pi => angle / (2 pi) vs (angle / 2) pi
+			angle := ocean.params.jonswap.angle / (2pi)
+			angleChanged := ui.slider(^angle, 0, 1)
+			if (angleChanged) {
+				ocean.params.jonswap.angle = 2angle pi
+			}
+			result |= angleChanged
 			ui.label(c"spreadBlend")
-			result |= ui.slider(^ocean.params.jonswap.spreadBlend, 0, 1)
+			result |= ui.slider(^jonswap.spreadBlend, 0, 1)
 			ui.label(c"swell")
-			result |= ui.slider(^ocean.params.jonswap.swell, 0, 1)
+			result |= ui.slider(^jonswap.swell, 0, 1)
 			ui.label(c"Alpha")
-			result |= ui.slider(^ocean.params.jonswap.alpha, 0, 1)
-			ui.label(c"Peak Omegae")
-			result |= ui.slider(^ocean.params.jonswap.peakOmega, 0, 1)
+			result |= ui.slider(^jonswap.alpha, 0, 1)
+			ui.label(c"Peak Omega")
+			result |= ui.slider(^jonswap.peakOmega, 0, 1)
 			ui.label(c"gamma")
-			result |= ui.slider(^ocean.params.jonswap.gamma, 0, 1)
+			result |= ui.slider(^jonswap.gamma, 0, 7)
 			ui.label(c"Short Waves Fade")
-			result |= ui.slider(^ocean.params.jonswap.shortWavesFade, 0, 1)
+			result |= ui.slider(^jonswap.shortWavesFade, 0, 1)
 
 			if (result & .Change) {
-				# TODO: re-generate initial spectrum
+				initSpectrum()
 			}
 		}
 		ui.layoutEndColumn()
-
-		# Color preview
-		rect := ui.layoutNext()
-		ui.drawRect(rect, state.bg)
-		println "Drew rect"
 	}
 
 	ui.endWindow()
@@ -603,8 +592,10 @@ frame :: fn() {
 	movement := vec3(
 		if (input.left) -1 else if (input.right) 1 else 0,
 		if (input.up) 1 else if (input.down) -1 else 0,
-		if (input.backward) 1 else if (input.forward) -1 else 0
-	)
+		# TODO: fix integer constants
+		input.scroll + if (input.backward) 1 else if (input.forward) -1 else 0
+	) 100
+	input.scroll = 0
 
 	updateOcean(seconds, deltaTime)
 	if (!startupFrameLogged) {
@@ -618,33 +609,34 @@ frame :: fn() {
 	# rendering
 	pass := sg.pass(action = state.passAction, swapchain = sokol.glue.swapchain())
 	sg.begin_pass(^pass)
-  sg.apply_pipeline(state.pip)
-  sg.apply_bindings(^state.bind)
+	sg.apply_pipeline(state.pip)
+	sg.apply_bindings(^state.bind)
 
 	# camera
 	w := app.widthf()
 	h := app.heightf()
 	aspect := w/h
-	rotation := quat.geographic(state.latitude, state.longitude)
-	rotMat := rotation.toMatrix()
+	rotation := quatMethods.geographic(state.latitude, state.longitude)
+
+	# controls
 	translationAmount := RotateV3Q(movement, rotation.inverse())
 	translationAmount = MulV3F(translationAmount, deltaTime)
-
 	state.position = AddV3(state.position, translationAmount)
 
-	proj := Perspective(1. / 6., aspect, 0.01, 100)
+	orientation := quatMethods.geographic(state.latitude, state.longitude)
 
-	camera := Translate(MulV3F(state.position, -1))
-
-	mvp := proj rotMat camera
+	uniforms := Uniforms(
+		objectToCamera = orientation.inverse().toMatrix() Translate(MulV3F(state.position, -1)),
+		proj = Perspective(1. / 6., aspect, 0.01, 1000)
+	)
 
 	uniformRange := sg.range(^mvp, @sizeOf @type(mvp))
 	sg.apply_uniforms(0, ^uniformRange)
 
-  sg.draw(0, indexLength, 1)
+	sg.draw(0, indexLength, 1)
 	ui.render(w, h)
-  sg.end_pass()
-  sg.commit()
+	sg.end_pass()
+	sg.commit()
 
 	prevTime = seconds
 }
@@ -672,13 +664,19 @@ event :: fn(e: ^app.event) {
 		.KEY_DOWN -> input.press(e.key_code, true)
 		.KEY_UP -> input.press(e.key_code, false)
 		.MOUSE_MOVE -> {
-      ui.inputMouseMove(@numCast(e.mouse_x), @numCast(e.mouse_y))
+			ui.inputMouseMove(@numCast(e.mouse_x), @numCast(e.mouse_y))
 			if (input.mouseDown) {
-				dt := deltaTime .2
+				dt := .2deltaTime
 				state.latitude += e.mouse_dx dt
 				state.longitude += e.mouse_dy dt
 			}
-		} 
+		}
+		.MOUSE_SCROLL -> {
+			ui.inputScroll(@numCast(-30 e.scroll_x), @numCast(-30 e.scroll_y))
+			if (!ui.mouseCaptured()) {
+				input.scroll += -e.scroll_y
+			}
+		}
 	}
 }
 

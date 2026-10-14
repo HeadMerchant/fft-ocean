@@ -107,32 +107,31 @@ dispatchCoord :: fn() -> PixelCoord {
 initializeSpectrum :: kernel(
 	initial: Surface,
 ) {
-	return
-	# coord := dispatchCoord()
-	# if (coord.x >= params.resolution or coord.y >= params.resolution) {
-	# 	return
-	# }
-	# halfN := @numCast(params.resolution, f32) * 0.5
-	# deltaK := tau / params.lengthScale
-	# k := vec2(
-	# 	(@numCast(coord.x, f32) - halfN) * deltaK,
-	# 	(@numCast(coord.y, f32) - halfN) * deltaK,
-	# )
-	# kLength := k.length()
-	# value := vec2(0, 0)
-	# if (params.lowCutoff <= kLength) {
-	# 	if (kLength <= params.highCutoff) {
-	# 		seed := coord.x + params.resolution * coord.y + params.resolution + params.seed
-	# 		gauss1 := gaussianPair(seed)
-	# 		gauss2 := gaussianPair(seed + 2)
-	# 		omega := dispersion(kLength)
-	# 		dOmegaDk := dispersionDerivative(kLength)
-	# 		energy := jonswapSpectrum(omega) * directionSpectrum(atan2(k.y, k.x), omega) * shortWaveFade(kLength)
-	# 		amplitude := sqrt(2 * energy * abs(dOmegaDk) / kLength * deltaK * deltaK)
-	# 		value = (gauss2.x * amplitude, gauss1.y * amplitude)
-	# 	}
-	# }
-	# initial.writeVec2(coord, value)
+	coord := dispatchCoord()
+	if (coord.x >= params.resolution or coord.y >= params.resolution) {
+		return
+	}
+	halfN := @numCast(params.resolution, f32) * 0.5
+	deltaK := tau / params.lengthScale
+	k := vec2(
+		(@numCast(coord.x, f32) - halfN) * deltaK,
+		(@numCast(coord.y, f32) - halfN) * deltaK,
+	)
+	kLength := k.length()
+	value := vec2(0, 0)
+	if (params.lowCutoff <= kLength) {
+		if (kLength <= params.highCutoff) {
+			seed := coord.x + params.resolution * coord.y + params.resolution + params.seed
+			gauss1 := gaussianPair(seed)
+			gauss2 := gaussianPair(seed + 2)
+			omega := dispersion(kLength)
+			dOmegaDk := dispersionDerivative(kLength)
+			energy := jonswapSpectrum(omega) * directionSpectrum(atan2(k.y, k.x), omega) * shortWaveFade(kLength)
+			amplitude := sqrt(2 * energy * abs(dOmegaDk) / kLength * deltaK * deltaK)
+			value = (gauss2.x * amplitude, gauss1.y * amplitude)
+		}
+	}
+	initial.writeVec2(coord, value)
 }
 
 updateSpectrum :: kernel(
@@ -156,7 +155,7 @@ updateSpectrum :: kernel(
 	kReciprocal := if (kMagnitude < 0.0001) 1 else 1 / kMagnitude
 	w0 := tau / params.repeatTime
 	phase := floor(sqrt(gravity * kMagnitude) / w0) * w0 * params.frameTime
-	exponent := complex.exp(phase)
+	exponent := complexMethods.exp(phase)
 	hTilde := h0 exponent + h0Conjugate exponent.conjugate()
 	ih := hTilde.timesI()
 	displacementX := ih.scale(k.x * kReciprocal)
@@ -179,7 +178,7 @@ butterflyStep :: fn(step: u32, index: u32) {
 	i := (w + index) % Size
 	source := step & 1
 	destination := source ~ 1
-	twiddle := complex.exp(tau * @numCast(w, f32) / @numCast(Size, f32))
+	twiddle := complexMethods.exp(tau * @numCast(w, f32) / @numCast(Size, f32))
 	fftBuffer[destination][index] = fftBuffer[source][i] + twiddle fftBuffer[source][i + b]
 }
 

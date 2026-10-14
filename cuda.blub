@@ -1,10 +1,10 @@
 @cIncludeDir("/opt/cuda/include")
-# @cInclude("cuda_shim.c")
 @linkDir("/opt/cuda/lib64")
 @link("cuda")
 @link("cufft")
 @link("cudart")
 fmt :: import "fmt.blub"
+using fmt
 
 Error :: enum(s32) {
 	Success
@@ -40,11 +40,14 @@ Error :: enum(s32) {
 	PeerAccessUnsupported
 	InvalidPtx
 	InvalidGraphicsContext
+	InvalidHandle = 400
 	NvlinkUncorrectable
 	JitCompilerNotFound
 	IllegalAddress = 700
 	Unknown = 999
-} impl {
+}
+
+ErrorMethods :: Error impl {
 	log :: fn(self: Self) {
 		if (self == .Success) {
 			return
@@ -93,7 +96,7 @@ fftResult :: enum(s32) {
 	NvshmemFailure = 0x14
 }
 
-fftResult impl {
+fftResultMethods :: fftResult impl {
 	log :: fn(self: Self) {
 		println @name self
 	}
@@ -102,9 +105,13 @@ fftResult impl {
 
 DevicePointer :: struct {
 	ptr: u64
-} impl {
+}
+
+DevicePointerMethods :: DevicePointer impl {
+	# ("cuMemcpyDtoH_v2"(^void, Self, usize) -> Error)(dst, self, size).log()
 	readBack :: fn(self: Self, dst: ^void, size: usize) {
 		println("Readback")
+		# (fn "cuMemcpyDtoH_v2"(^void, Self, usize) -> Error)(dst, self, size).log()
 		(fn "cuMemcpyDtoH_v2"(dst: ^void, src: Self, size: usize) -> Error)(dst, self, size).log()
 	}
 
@@ -113,12 +120,13 @@ DevicePointer :: struct {
 		(fn "cuMemsetD8_v2"(dst: Self, value: u8, count: usize) -> Error)(self, 0, size).log()
 	}
 
-	copyToDevice :: fn(self: Self, src: ^void, size: usize) {
+	upload :: fn(self: Self, src: ^void, size: usize) {
 		(fn "cuMemcpyHtoD_v2"(dst: Self, src: ^void, size: usize) -> Error)(self, src, size).log()
 	}
 }
 
 setDevice :: fn "cudaSetDevice"(device: s32) -> Error
+free :: fn "cudaFree"(ptr: ^void) -> Error
 getGlDevices :: fn "cudaGLGetDevices"(
 	deviceCount: ^u32,
 	devices: ^s32,
@@ -159,7 +167,9 @@ Array :: ^opaque
 
 Surface :: struct {
 	id: u64
-} impl {
+}
+
+SurfaceMethods :: Surface impl {
 	destroy :: fn(self: Self) {
 		(fn "cudaDestroySurfaceObject"(surfaceObject: Self) -> Error)(self).log()
 	}
@@ -185,7 +195,9 @@ ResourceDesc :: struct {
 
 GraphicsResource :: struct {
 	id: u64
-} impl {
+}
+
+GraphicsResourceMethods :: GraphicsResource impl {
 	fromTexture :: fn(image: gl.Texture2d, flags: GraphicsRegisterFlags) -> Self {
 		register :: fn "cudaGraphicsGLRegisterImage"(
 			resource: ^Self,
@@ -245,20 +257,32 @@ GraphicsResource :: struct {
 	}
 }
 
+Context :: ^opaque
 Device :: s32
-Context :: struct {ptr: ^opaque}
 Module :: struct {ptr: ^opaque}
 Kernel :: struct {ptr: ^opaque}
 Symbol :: struct {ptr: ^opaque}
 
-Module impl {
+# CUDA's current context is per host thread.  Retain the device primary
+# context once, then make that exact context current for every Driver call.
+# The Runtime graphics interop API uses this same primary context.
+primaryContext: Context
+primaryDevice: s32
+
+activatePrimaryContext :: fn() {
+	setCurrent(primaryContext).log()
+}
+
+ModuleMethods :: Module impl {
 	load :: fn(image: ^u8) -> Self {
+		activatePrimaryContext()
 		module: Self
 		(fn "cuModuleLoadData"(module: ^Module, image: ^u8) -> Error)(^module, image).log()
 		return module
 	}
 
 	loadKernel :: fn(self: Self, name: ^u8) -> Kernel {
+		activatePrimaryContext()
 		resultKernel: Kernel
 		(fn "cuModuleGetFunction"(
 			hfunc: ^Kernel,
@@ -269,9 +293,10 @@ Module impl {
 	}
 
 	getGlobal :: fn(self: Self, name: ^u8) -> DevicePointer {
+		activatePrimaryContext()
 		ptr: DevicePointer
 		toss: usize
-		(fn "cuModuleGetGlobal"(
+		(fn "cuModuleGetGlobal_v2"(
 			dptr: ^DevicePointer,
 			bytes: ^usize,
 			hmod: Module,
@@ -285,7 +310,9 @@ Grid :: struct {
 	x: u32
 	y: u32
 	z: u32
-} impl {
+}
+
+GridMethods :: Grid impl {
 	of :: fn(size: u32) -> Self {
 		return (size, size, size)
 	}
@@ -295,7 +322,9 @@ Block :: struct {
 	x: u32
 	y: u32
 	z: u32
-} impl {
+}
+
+BlockMethods :: Block impl {
 	of :: fn(size: u32) -> Self {
 		return (size, size, size)
 	}
@@ -305,9 +334,14 @@ Stream :: ^opaque
 
 
 sync :: fn "cuCtxSynchronize"() -> Error
+getCurrent :: fn "cuCtxGetCurrent"(context: ^Context) -> Error
+setCurrent :: fn "cuCtxSetCurrent"(context: Context) -> Error
+retainPrimaryContext :: fn "cuDevicePrimaryCtxRetain"(context: ^Context, device: Device) -> Error
 
-Kernel impl {
+KernelMethods :: Kernel impl {
 	launch :: fn (self: Self, args: [^]^void, grid: Grid, block: Block, sharedMem: u32) {
+		activatePrimaryContext()
+
 		(fn "cuLaunchKernel"(
 			f: Kernel,
 		    gridDimX: u32,
@@ -344,14 +378,14 @@ Kernel impl {
 	}
 }
 
-Device impl {
+DeviceMethods :: Device impl {
 	init :: fn(self: ^Self, moduleSource: ^u8) -> Module {
-		using fmt
 		println("Initializing CUDA")
 		(fn "cuInit"(flags: u32) -> Error)(0).log()
 		println("Getting CUDA device for current OpenGL context")
 		glDeviceCount: u32
 		glDevice: s32
+
 		# cudaGLDeviceListAll. CUDA-GL interop must use this device, not
 		# necessarily CUDA device 0.
 		getGlDevices(^glDeviceCount, ^glDevice, 1, 1).log()
@@ -362,14 +396,12 @@ Device impl {
 			println("No CUDA device backs the current OpenGL context")
 			@crash
 		}
-		println("Initializing CUDA runtime primary context for OpenGL device")
-		setDevice(glDevice).log()
-		# println("Getting CUDA device")
-		# (fn "cuDeviceGet"(device: ^Self, ordinal: u32) -> Error)(self, 0).log()
-		context : Context
-		println("Getting CUDA current context")
-		(fn "cuCtxGetCurrent"(context: ^Context) -> Error)(^context).log()
+		println("Retaining CUDA primary context for OpenGL device")
+		primaryDevice = glDevice
+		retainPrimaryContext(^primaryContext, glDevice).log()
+		println("Making CUDA primary context current")
+		activatePrimaryContext()
 		println("Loading CUDA module")
-		return Module.load(moduleSource)
+		return ModuleMethods.load(moduleSource)
 	}
 }

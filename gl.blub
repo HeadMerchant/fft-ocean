@@ -55,7 +55,9 @@ setTextureParameter :: fn "glTexParameteri"(
 
 Texture2d :: struct {
 	id: u32
-} impl {
+}
+
+Texture2dMethods :: Texture2d impl {
 	texture2dTarget    :: 0x0DE1
 	textureNearest     :: 0x2600
 	textureClampToEdge :: 0x812F
@@ -74,15 +76,15 @@ Texture2d :: struct {
 		self: Self
 		(fn "glGenTextures"(count: s32, textures: ^Self))(1, ^self)
 		self.bind()
-		setTextureParameter(.Texture2D, .MinFilter, Self.textureNearest)
-		setTextureParameter(.Texture2D, .MagFilter, Self.textureNearest)
-		setTextureParameter(.Texture2D, .WrapS, Self.textureClampToEdge)
-		setTextureParameter(.Texture2D, .WrapT, Self.textureClampToEdge)
+		setTextureParameter(.Texture2D, .MinFilter, Texture2dMethods.textureNearest)
+		setTextureParameter(.Texture2D, .MagFilter, Texture2dMethods.textureNearest)
+		setTextureParameter(.Texture2D, .WrapS, Texture2dMethods.textureClampToEdge)
+		setTextureParameter(.Texture2D, .WrapT, Texture2dMethods.textureClampToEdge)
 		if (swizzleRed) {
 			setTextureParameter(.Texture2D, .SwizzleR, 1)
 			setTextureParameter(.Texture2D, .SwizzleG, 1)
 			setTextureParameter(.Texture2D, .SwizzleB, 1)
-			setTextureParameter(.Texture2D, .SwizzleA, Self.channelRed)
+			setTextureParameter(.Texture2D, .SwizzleA, Texture2dMethods.channelRed)
 		}
 		(fn "glTexStorage2D"(
 			target: TextureTarget,
@@ -104,7 +106,7 @@ Texture2d :: struct {
 		setTextureParameter(.Texture2D, .SwizzleR, 1)
 		setTextureParameter(.Texture2D, .SwizzleG, 1)
 		setTextureParameter(.Texture2D, .SwizzleB, 1)
-		setTextureParameter(.Texture2D, .SwizzleA, Self.channelRed)
+		setTextureParameter(.Texture2D, .SwizzleA, Texture2dMethods.channelRed)
 		Self(0).bind()
 	}
 
@@ -130,7 +132,7 @@ Texture2d :: struct {
       0,
       width,
       height,
-      Self.channelRed,
+		  Texture2dMethods.channelRed,
       UnsignedByte,
       ^data[0]
     )

@@ -1,0 +1,11 @@
+{
+  "format": "R8",
+  "atlas_width": 128,
+  "atlas_height": 128,
+  "glyph_width": 8,
+  "glyph_height": 16,
+  "first_codepoint": 0,
+  "last_codepoint": 126,
+  "columns": 16,
+  "rows": 8
+}

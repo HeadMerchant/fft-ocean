@@ -1,15 +1,15 @@
-shaders:
-    #!/usr/bin/env sh
-    for file in shaders/*.glsl; do
-        [ -f "$file" ] || break
-        sokol-shdc --input "$file" --output "${file}.h" --slang glsl410
-    done
-    
-build:
-    blub main.blub
+install:
+    git clone --depth 1 --single-branch https://github.com/floooh/sokol
+
+deps:
+    git submodule init
+    git submodule update
+
+assets:
+    python3 tools/bdf_to_atlas.py \
+        spleen/spleen-8x16.bdf \
+        assets/spleen-8x16.r8
 
 run:
     blub main.blub && ./main
 
-install:
-    git clone --depth 1 --single-branch https://github.com/floooh/sokol

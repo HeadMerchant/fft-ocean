@@ -1,0 +1,61 @@
+Seek :: enum(s32) {
+	Set
+	Current
+	End
+	Data
+	Hole
+}
+
+FileDescriptor :: struct {descriptor: usize}
+
+FileDescriptorMethods :: FileDescriptor impl {
+	open :: fn "fopen"(path: ^u8, mode: ^u8) -> Self
+
+	valid :: fn(self: Self) -> bool {
+		return self.descriptor != 0
+	}
+
+	seek :: fn "fseek"(file: Self, offset: u64, whence: Seek) -> u64
+	read :: fn "fread"(dest: [^]u8, elemSize: usize, elemCount: u64, stream: Self) -> usize
+	close :: fn "fclose"(self: Self) -> u32
+	getOffset :: fn "ftell"(self: Self) -> u64
+}
+
+using import "memory.blub"
+using import "fmt.blub"
+
+File :: struct {
+	contents: []u8
+}
+
+FileMethods :: File impl {
+	# heap allocates contents
+	read :: fn(path: ^u8, nullTerminate: bool) -> Self {
+		desc := FileDescriptorMethods.open(path, c"r")
+		if (!desc.valid()) {
+			# TODO: string interpolation
+			println "Error opening file"
+			@crash
+		}
+
+		buffer: []u8
+		desc.seek(0, .End)
+		buffer.length = desc.getOffset()
+		desc.seek(0, .Set)
+		buffer.data = malloc(buffer.length + if (nullTerminate) 1 else 0)
+		if (nullTerminate) buffer.data[buffer.length] = 0
+		
+		read := FileDescriptorMethods.read(buffer.data, @sizeOf u8, buffer.length, desc)
+		if (read != buffer.length) {
+			println "Failed to read full file; only read"
+			print_s32 @numCast(read)
+			@crash
+		}
+		desc.close()
+		return (buffer,)
+	}
+
+	close :: fn(self: Self) {
+		free(self.contents.data)
+	}
+}

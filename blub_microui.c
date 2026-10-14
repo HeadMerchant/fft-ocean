@@ -1,4 +1,5 @@
-#include "microui.c"
+#include "microui/src/microui.c"
+#include "microui/src/microui.h"
 #include <stdlib.h>
 
 mu_Context *mu_blub_create_context() {
@@ -19,3 +20,7 @@ void mu_blub_set_text_callbacks(mu_Context *context,
 }
 
 mu_Style *mu_blub_style(mu_Context *context) { return context->style; }
+
+int mu_blub_mouse_captured(mu_Context *context) {
+  return context->focus != 0 || context->hover_root != NULL;
+}

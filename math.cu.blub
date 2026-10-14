@@ -2,7 +2,9 @@ epsilon :: 0.00001
 vec2 :: struct {
 	x: f32
 	y: f32
-} impl {
+}
+
+vec2Methods :: vec2 impl {
 	dot :: fn(a: Self, b: Self) -> f32 {
 		return a.x * b.x + a.y * b.y
 	}
@@ -50,7 +52,9 @@ tau :: 6.28318530718
 complex :: struct {
 	re: f32
 	im: f32
-} impl {
+}
+
+complexMethods :: complex impl {
 	fromVec2 :: fn(a: vec2) -> Self {
 		return (a.x, a.y)
 	}
